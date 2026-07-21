@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Tests / cache
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+
+# Local / secretos / datos personales (no subir)
+.env
+.env.*
+*.epw
+!tests/fixtures/*.epw
+merge_report.json
+*_modified.epw
+
+# Streamlit local
+.streamlit/secrets.toml

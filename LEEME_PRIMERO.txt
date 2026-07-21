@@ -1,0 +1,31 @@
+========================================
+  GENERACION DE EPW — INAHE-CONICET
+========================================
+
+Esta carpeta ES el programa completo y listo.
+
+UBICACION:
+  ...\Solar Descomposicion Soft\solar_decomp
+
+----------------------------------------
+PARA USARLO EN TU PC
+----------------------------------------
+1. Abrí esta carpeta
+2. Hacé doble clic en:  run.bat
+3. Se abre el navegador con la herramienta
+
+----------------------------------------
+PARA PONERLO ONLINE (internet)
+----------------------------------------
+1) Subí este proyecto a GitHub (GitHub Desktop)
+2) Entrá a https://share.streamlit.io
+3) New app → Main file: app_solar.py → Deploy
+4) Compartí el link .streamlit.app
+
+----------------------------------------
+AUTORES
+----------------------------------------
+Dr. Arq. Gustavo Barea Paci
+Dra. Arq. Carolina Ganem
+INAHE - CONICET
+========================================
