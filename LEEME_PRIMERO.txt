@@ -4,15 +4,21 @@
 
 Esta carpeta ES el programa completo y listo.
 
-UBICACION:
-  ...\Solar Descomposicion Soft\solar_decomp
+Motor científico: Solar Decomp v1.1.0
+  (DIRINT Perez 1992 / Erbs / Reindl-2)
+  https://github.com/gbarea-INAHE/solar_decomp
 
 ----------------------------------------
 PARA USARLO EN TU PC
 ----------------------------------------
 1. Abrí esta carpeta
 2. Hacé doble clic en:  run.bat
+   (o: pip install -r requirements.txt && streamlit run app_solar.py)
 3. Se abre el navegador con la herramienta
+
+Modos:
+  · Descomposición — GHI → DNI + DHI (CSV / Excel / EPW)
+  · Generación de EPW — plantilla medidos + EPW base
 
 ----------------------------------------
 PARA PONERLO ONLINE (internet)

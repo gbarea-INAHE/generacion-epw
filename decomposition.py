@@ -2,7 +2,8 @@
 decomposition.py — Descomposición GHI → DNI + DHI.
 
 Modelos implementados:
-  1. DIRINT (Perez et al., 1992)       — modelo primario
+  1. DIRINT (Perez et al., 1992)       — modelo primario. Desde v1.1 usa pvlib.irradiance.dirint;
+     la tabla propia de v1.0.0 se conserva como dirint_series_v1 (solo para reproducir lo publicado).
   2. Erbs   (Erbs et al., 1982)        — modelo fallback / comparación
 
 Ambos retornan: DNI [W/m²], DHI [W/m²], metadata del modelo.
@@ -15,14 +16,16 @@ Referencias:
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+import pvlib
 
 from config import (
     AM_MAX, ZENITH_MAX_DEG, KT_CLOUD_ENH, KT_UNPHYSICAL,
-    DNI_MAX_W_M2, W_DEFAULT_CM,
+    DNI_MAX_W_M2, W_DEFAULT_CM, MIN_COSZ_DEFAULT,
 )
 from solar_geometry import precipitable_water_cm
 
@@ -88,6 +91,22 @@ def _bin_index(value: float, edges: list[float]) -> int:
         if value < edges[i + 1]:
             return i
     return len(edges) - 2
+
+
+# Centros de los bins Kt' para interpolación lineal (Perez 1992)
+_KTP_CENTERS = np.array([
+    0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.625, 0.675, 0.75, 0.85, 1.0
+])
+
+
+def _kn_interpolated(w_bin: int, dkt_bin: int, ktp: float) -> float:
+    """
+    Interpola Kn linealmente en la dimensión Kt' según Perez (1992).
+    W y ΔKt usan indexación de piso; Kt' usa interpolación entre centros de bin.
+    """
+    ktp_c = min(max(ktp, 0.0), 1.0)
+    kn_row = _KN_TABLE[w_bin, dkt_bin]   # array de 11 valores
+    return float(np.interp(ktp_c, _KTP_CENTERS, kn_row))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -165,8 +184,8 @@ def dirint_single(
     meta["dkt_bin"] = dkt_bin
     meta["ktp_bin"] = ktp_bin
 
-    # ── Lookup Kn ─────────────────────────────────────────────────────────────
-    kn = _KN_TABLE[w_bin, dkt_bin, ktp_bin]
+    # ── Lookup Kn con interpolación lineal en Kt' (Perez 1992) ───────────────
+    kn = _kn_interpolated(w_bin, dkt_bin, ktp_clamped)
     meta["kn"] = kn
 
     # ── Calcular DNI y DHI ────────────────────────────────────────────────────
@@ -183,9 +202,13 @@ def dirint_single(
     return dni, dhi, meta
 
 
-def dirint_series(df: pd.DataFrame, w_cm_series: Optional[pd.Series] = None) -> pd.DataFrame:
+def dirint_series_v1(df: pd.DataFrame, w_cm_series: Optional[pd.Series] = None, min_cosz: float = MIN_COSZ_DEFAULT) -> pd.DataFrame:
     """
-    Aplica DIRINT a todo el DataFrame horario.
+    LEGACY (v1.0.0). Aplica la tabla DIRINT propia de la v1.0.0 a todo el DataFrame horario.
+
+    ATENCIÓN: esta tabla NO es el DIRINT de Perez et al. (1992) tal como lo implementa pvlib (otra estructura de tabla,
+    ΔKt' solo hacia atrás, W con HR = 70 % fija) y sobreestima el DNI. Se conserva únicamente para reproducir los
+    resultados de la v1.0.0; usar dirint_series.
 
     Columnas requeridas en df:
       GHI_h, G0n, G0h, Kt, AM, temp_C (opcional), pressure_kPa (opcional)
@@ -237,7 +260,15 @@ def dirint_series(df: pd.DataFrame, w_cm_series: Optional[pd.Series] = None) -> 
     g0n_arr = df["G0n"].values.astype(float)
     g0h_arr = df["G0h"].values.astype(float)
 
+    cosz_arr = np.where(g0n_arr > 0, g0h_arr / g0n_arr, 0.0)
+
     for i in range(n):
+        if cosz_arr[i] < min_cosz and g0h_arr[i] > 0:
+            dni_out[i] = float("nan")
+            dhi_out[i] = float("nan")
+            flag_out[i] = "invalid"
+            continue
+
         dni, dhi, meta = dirint_single(
             ghi=ghi_arr[i],
             g0n=g0n_arr[i],
@@ -269,6 +300,233 @@ def dirint_series(df: pd.DataFrame, w_cm_series: Optional[pd.Series] = None) -> 
     out["delta_Ktp"]    = dkt_arr
     out["W_cm"]         = w_arr
     out["flag_dirint"]  = flag_out
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DIRINT — Perez et al. (1992), vía pvlib.irradiance.dirint
+# ══════════════════════════════════════════════════════════════════════════════
+
+_REQUIRED_DIRINT = ("timestamp_center", "GHI_h", "G0n", "G0h", "Kt", "AM", "zenith_deg", "pressure_kPa")
+
+
+def _delta_ktp_bilateral(ktp, seg_id=None) -> np.ndarray:
+    """
+    ΔKt' de Perez et al. (1992, ec. 2-3): media de |Kt'_i − Kt'_{i−1}| y |Kt'_i − Kt'_{i+1}| sobre los vecinos válidos
+    (uno solo en los extremos o junto a un NaN). Es informativo: el DNI lo calcula pvlib con su propia ΔKt'.
+    """
+    ktp = np.asarray(ktp, dtype=float)
+    prev = np.full(len(ktp), np.nan)
+    nxt = np.full(len(ktp), np.nan)
+    prev[1:] = np.abs(ktp[1:] - ktp[:-1])
+    nxt[:-1] = np.abs(ktp[:-1] - ktp[1:])
+    if seg_id is not None:                    # los vecinos que no son la hora contigua (salto de tramo) no cuentan
+        seg_id = np.asarray(seg_id)
+        prev[1:][seg_id[1:] != seg_id[:-1]] = np.nan
+        nxt[:-1][seg_id[:-1] != seg_id[1:]] = np.nan
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return np.nanmean(np.vstack([prev, nxt]), axis=0)
+
+
+def dirint_series(
+    df: pd.DataFrame,
+    w_cm_series: Optional[pd.Series] = None,
+    min_cosz: float = MIN_COSZ_DEFAULT,
+    max_zenith: float = ZENITH_MAX_DEG,
+    dew_point_C: Optional[np.ndarray] = None,
+) -> pd.DataFrame:
+    """
+    DIRINT de Perez et al. (1992), implementado con pvlib.irradiance.dirint (referencia abierta).
+
+    Columnas requeridas en df: timestamp_center, GHI_h, G0n, G0h, Kt, AM, zenith_deg, pressure_kPa.
+    La serie debe ser horaria, regular y SIN huecos (conservar las filas nocturnas): ΔKt' usa las dos horas vecinas.
+
+    Agua precipitable: Perez usa el punto de rocío (W = exp(0.07·Td − 0.075)). Se toma, en este orden, de
+    dew_point_C, de la columna dew_point_C de df, o de w_cm_series (se invierte la relación). Si no hay ninguno,
+    pvlib usa el bin de «agua precipitable desconocida» de Perez; NO se asume humedad relativa ni W por defecto.
+    Las horas individuales con punto de rocío NaN usan también ese bin (no se descartan).
+
+    Retorna df con DNI_dirint, DHI_dirint (por cierre), Kn_dirint, Ktp, delta_Ktp, W_cm, flag_dirint, dirint_version y
+    dirint_W_source («dew_point» o «unknown_bin» por hora: de dónde salió el agua precipitable).
+    OJO: dirint_series usa dew_point_C si la columna existe; run_decomposition la excluye salvo use_dew_point=True.
+    """
+    missing = [c for c in _REQUIRED_DIRINT if c not in df.columns]
+    if missing:
+        raise KeyError(f"dirint_series: faltan columnas {missing}")
+    n = len(df)
+    times = pd.DatetimeIndex(pd.to_datetime(df["timestamp_center"]))
+    # Tramos continuos: ΔKt' solo puede usar horas contiguas (paso de exactamente 1 h). Un TMY (meses de años distintos), horas faltantes o filas
+    # desordenadas parten la serie en tramos; cada tramo se pasa a pvlib por separado y ΔKt' no cruza el salto. Con n tramos > 1 se avisa.
+    brk = (times.to_series().diff() != pd.Timedelta(hours=1)).to_numpy().copy()     # copia: to_numpy() puede ser de solo lectura (pandas ≥ 3)
+    if n:
+        brk[0] = True
+    seg_id = np.cumsum(brk)
+    n_seg = int(seg_id[-1]) if n else 0
+    if n_seg > 1:
+        warnings.warn(f"dirint_series: la serie tiene {n_seg} tramos continuos de 1 h (p. ej. un TMY con meses de años distintos, o horas faltantes); "
+                      f"ΔKt' no cruza los saltos y se calcula por tramo", RuntimeWarning, stacklevel=2)
+
+    # ── Punto de rocío para pvlib ────────────────────────────────────────────
+    if dew_point_C is not None:
+        td = np.asarray(dew_point_C, dtype=float)
+    elif "dew_point_C" in df.columns:
+        td = df["dew_point_C"].to_numpy(float)
+    elif w_cm_series is not None:
+        with np.errstate(divide="ignore", invalid="ignore"):
+            td = (np.log(np.asarray(w_cm_series, dtype=float)) + 0.075) / 0.07
+    else:
+        td = None
+    if td is not None and len(td) != n:
+        raise ValueError("dirint_series: el punto de rocío debe tener una fila por hora")
+
+    ghi = df["GHI_h"].to_numpy(float)
+    g0n = df["G0n"].to_numpy(float)
+    g0h = df["G0h"].to_numpy(float)
+    kt = df["Kt"].to_numpy(float)
+    am = df["AM"].to_numpy(float)
+    cosz = np.where(g0n > 0, g0h / np.where(g0n > 0, g0n, np.nan), 0.0)
+
+    zen_all = df["zenith_deg"].to_numpy(float)
+    pres_all = df["pressure_kPa"].to_numpy(float) * 1000.0
+
+    def _pv(temp_dew):
+        out = np.full(n, np.nan)
+        for sid in range(1, n_seg + 1):
+            sl = seg_id == sid
+            t = times[sl]
+            out[sl] = pvlib.irradiance.dirint(
+                ghi=pd.Series(ghi[sl], index=t), solar_zenith=pd.Series(zen_all[sl], index=t), times=t,
+                pressure=pd.Series(pres_all[sl], index=t), use_delta_kt_prime=True,
+                temp_dew=None if temp_dew is None else pd.Series(temp_dew[sl], index=t), min_cos_zenith=min_cosz, max_zenith=max_zenith,
+            ).to_numpy(float)
+        return out
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        dni = _pv(None)                       # bin de agua precipitable desconocida (Perez 1992)
+        if td is not None and np.isfinite(td).any():
+            # pvlib devuelve NaN en las horas con punto de rocío NaN (verificado con pvlib 0.16.1, aunque su docstring diga otra cosa):
+            # esas horas conservan el resultado del bin «desconocido»; solo las que tienen punto de rocío usan el agua precipitable.
+            dni_known = _pv(td)
+            dni = np.where(np.isfinite(td), dni_known, dni)
+
+    dni = np.where((g0h > 0) & (cosz >= min_cosz), dni, np.nan)      # de noche o con sol muy bajo: inválido (como v1)
+    dni = np.clip(dni, 0.0, DNI_MAX_W_M2)                            # np.clip conserva NaN
+    dhi = np.where(np.isfinite(dni), np.clip(ghi - dni * cosz, 0.0, None), np.nan)
+
+    ktp = np.array([_kt_prime(k, a) if (not math.isnan(k) and not math.isnan(a)) else float("nan") for k, a in zip(kt, am)])
+    flag = np.full(n, "invalid", dtype=object)
+    ok = np.isfinite(dni)
+    flag[ok & (kt > KT_UNPHYSICAL)] = "DIRINT_unphysical"
+    flag[ok & (kt > KT_CLOUD_ENH) & (kt <= KT_UNPHYSICAL)] = "DIRINT_cloudenh"
+    flag[ok & (kt <= KT_CLOUD_ENH)] = "DIRINT"
+
+    out = df.copy()
+    out["DNI_dirint"] = dni
+    out["DHI_dirint"] = dhi
+    out["Kn_dirint"] = np.where(g0n > 0, dni / np.where(g0n > 0, g0n, np.nan), np.nan)
+    out["Ktp"] = ktp
+    out["delta_Ktp"] = _delta_ktp_bilateral(ktp, seg_id)
+    out["W_cm"] = np.nan if td is None else np.exp(0.07 * td - 0.075)
+    out["dirint_W_source"] = "unknown_bin" if td is None else np.where(np.isfinite(td), "dew_point", "unknown_bin")
+    out["flag_dirint"] = flag
+    out["dirint_version"] = "perez1992_pvlib"
+    return out
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# REINDL-2 — Reindl et al. 1990
+# ══════════════════════════════════════════════════════════════════════════════
+
+def reindl2_single(
+    ghi: float,
+    kt: float,
+    g0h: float,
+    g0n: float,
+    zenith_deg: float,
+) -> tuple[float, float]:
+    """
+    Modelo Reindl-2 escalar (Reindl et al., 1990).
+
+    Kd = DHI/GHI como función de Kt y sin(α) donde α es la elevación solar:
+      Kt ≤ 0.30       → Kd = 1.020 − 0.254·Kt + 0.0123·sin(α)
+      0.30 < Kt < 0.78 → Kd = 1.400 − 1.749·Kt + 0.177·sin(α)
+      Kt ≥ 0.78       → Kd = 0.486·Kt − 0.182·sin(α)
+    Kd ∈ [0, 1]
+
+    Ref: Reindl D.T. et al. (1990). Solar Energy, 45(1), 1–7.
+    """
+    if g0h <= 0 or math.isnan(ghi) or math.isnan(kt) or math.isnan(zenith_deg):
+        return float("nan"), float("nan")
+
+    ghi = max(0.0, ghi)
+    elev_deg = max(0.0, 90.0 - zenith_deg)
+    sin_alpha = math.sin(math.radians(elev_deg))
+    kt_c = min(max(kt, 0.0), 1.0)
+
+    if kt_c <= 0.30:
+        kd = 1.020 - 0.254 * kt_c + 0.0123 * sin_alpha
+    elif kt_c < 0.78:
+        kd = 1.400 - 1.749 * kt_c + 0.177 * sin_alpha
+    else:
+        kd = 0.486 * kt_c - 0.182 * sin_alpha
+
+    kd = max(0.0, min(kd, 1.0))
+    dhi = max(0.0, kd * ghi)
+
+    cos_z = g0h / g0n if g0n > 0 else 0.0
+    if cos_z <= 0:
+        return float("nan"), float("nan")
+
+    dni = max(0.0, min((ghi - dhi) / cos_z, DNI_MAX_W_M2))
+    dhi = min(dhi, ghi)
+    return dni, dhi
+
+
+def reindl2_series(df: pd.DataFrame, min_cosz: float = MIN_COSZ_DEFAULT) -> pd.DataFrame:
+    """
+    Aplica Reindl-2 a todo el DataFrame horario.
+    Columnas requeridas: GHI_h, Kt, G0h, G0n, zenith_deg.
+    """
+    n = len(df)
+    dni_out  = np.full(n, float("nan"))
+    dhi_out  = np.full(n, float("nan"))
+    flag_out = np.full(n, "invalid", dtype=object)
+
+    ghi_arr    = df["GHI_h"].values.astype(float)
+    kt_arr     = df["Kt"].values.astype(float)
+    g0h_arr    = df["G0h"].values.astype(float)
+    g0n_arr    = df["G0n"].values.astype(float)
+    zenith_arr = df["zenith_deg"].values.astype(float)
+    cosz_arr   = np.where(g0n_arr > 0, g0h_arr / g0n_arr, 0.0)
+
+    for i in range(n):
+        if g0h_arr[i] <= 0 or math.isnan(ghi_arr[i]) or math.isnan(kt_arr[i]):
+            continue
+        if cosz_arr[i] < min_cosz:
+            continue
+
+        dni, dhi = reindl2_single(
+            ghi_arr[i], kt_arr[i], g0h_arr[i], g0n_arr[i], zenith_arr[i]
+        )
+        if math.isnan(dni):
+            continue
+
+        dni_out[i] = dni
+        dhi_out[i] = dhi
+        kt = kt_arr[i]
+        if kt > KT_UNPHYSICAL:
+            flag_out[i] = "Reindl2_unphysical"
+        elif kt > KT_CLOUD_ENH:
+            flag_out[i] = "Reindl2_cloudenh"
+        else:
+            flag_out[i] = "Reindl2"
+
+    out = df.copy()
+    out["DNI_reindl2"] = dni_out
+    out["DHI_reindl2"] = dhi_out
+    out["flag_reindl2"] = flag_out
     return out
 
 
@@ -323,7 +581,7 @@ def erbs_single(ghi: float, kt: float, g0h: float) -> tuple[float, float]:
     return dni_cosz, dhi  # _cosz suffix implícito — ver erbs_series
 
 
-def erbs_series(df: pd.DataFrame) -> pd.DataFrame:
+def erbs_series(df: pd.DataFrame, min_cosz: float = MIN_COSZ_DEFAULT) -> pd.DataFrame:
     """
     Aplica Erbs a todo el DataFrame horario.
     Columnas requeridas: GHI_h, Kt, G0h, G0n (para cos_Z).
@@ -348,7 +606,7 @@ def erbs_series(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         cos_z = g0h / g0n if g0n > 0 else 0.0
-        if cos_z <= 0:
+        if cos_z <= 0 or cos_z < min_cosz:
             continue
 
         dni_cosz, dhi = erbs_single(ghi, kt, g0h)
@@ -387,44 +645,66 @@ def erbs_series(df: pd.DataFrame) -> pd.DataFrame:
 def run_decomposition(
     df_hourly: pd.DataFrame,
     primary: str = "DIRINT",
+    min_cosz: float = MIN_COSZ_DEFAULT,
+    legacy_dirint: bool = False,
+    use_dew_point: bool = False,
 ) -> pd.DataFrame:
     """
-    Ejecuta ambos modelos y selecciona el primario como columnas DNI/DHI.
+    Ejecuta los tres modelos y selecciona el primario como columnas DNI/DHI.
 
     Parámetros
     ----------
     df_hourly : DataFrame de preprocessor.aggregate_to_hourly
-    primary   : "DIRINT" o "Erbs" — modelo que puebla DNI/DHI finales
+    primary   : "DIRINT", "Erbs" o "Reindl-2"
+    min_cosz  : umbral mínimo de cos(Z) para considerar descomposición válida
+    legacy_dirint : True usa la tabla DIRINT de la v1.0.0 (NO es Perez 1992) solo para reproducir resultados publicados
+    use_dew_point : True hace que el DIRINT de Perez use el agua precipitable del punto de rocío (columna dew_point_C de
+                    df_hourly, que el preprocesador crea desde humedad relativa + temperatura o desde una columna de punto de
+                    rocío). Por defecto False: se usa el bin de «agua precipitable desconocida» de Perez, porque en el piloto con
+                    4 estaciones medidas usar el punto de rocío aumentó el RMSE de DNI en 3–5 W/m² (ver CHANGELOG).
+                    Si es True y no hay dew_point_C, falla con ValueError (no se sustituye en silencio).
 
     Retorna
     -------
     DataFrame con columnas DNI, DHI (del modelo primario) más
-    DNI_dirint, DHI_dirint, DNI_erbs, DHI_erbs para comparación.
+    DNI_dirint, DHI_dirint, DNI_erbs, DHI_erbs, DNI_reindl2, DHI_reindl2.
     """
-    # Paso 1: DIRINT
-    df_d = dirint_series(df_hourly)
-
-    # Paso 2: Erbs (opera sobre df_hourly, no sobre df_d para evitar dependencias)
-    df_e = erbs_series(df_hourly)
-
-    # Paso 3: combinar
-    df_out = df_d.copy()
-    df_out["DNI_erbs"]  = df_e["DNI_erbs"]
-    df_out["DHI_erbs"]  = df_e["DHI_erbs"]
-    df_out["flag_erbs"] = df_e["flag_erbs"]
-
-    # Paso 4: columnas finales según modelo primario
-    if primary.upper() == "DIRINT":
-        df_out["DNI"]      = df_out["DNI_dirint"]
-        df_out["DHI"]      = df_out["DHI_dirint"]
-        df_out["model_primary"] = df_out["flag_dirint"]
+    if use_dew_point and legacy_dirint:
+        raise ValueError("use_dew_point no se aplica al DIRINT legacy de la v1.0.0 (usa su propia estimación de agua precipitable)")
+    if use_dew_point and "dew_point_C" not in df_hourly.columns:
+        raise ValueError("use_dew_point=True pero df_hourly no tiene la columna dew_point_C (el archivo no trae punto de rocío ni humedad + temperatura)")
+    if legacy_dirint:
+        df_d = dirint_series_v1(df_hourly, min_cosz=min_cosz)
     else:
-        df_out["DNI"]      = df_out["DNI_erbs"]
-        df_out["DHI"]      = df_out["DHI_erbs"]
-        df_out["model_primary"] = df_out["flag_erbs"]
+        # por defecto el DIRINT NO usa dew_point_C aunque exista; la columna se conserva en la salida como dato
+        df_d = dirint_series(df_hourly if use_dew_point else df_hourly.drop(columns=["dew_point_C"], errors="ignore"), min_cosz=min_cosz)
+        if "dew_point_C" in df_hourly.columns:
+            df_d["dew_point_C"] = df_hourly["dew_point_C"].to_numpy()
+    df_e  = erbs_series(df_hourly, min_cosz=min_cosz)
+    df_r  = reindl2_series(df_hourly, min_cosz=min_cosz)
 
-    # Paso 5: GHI_check — ratio de consistencia (no trivialmente 0)
-    # clearness_ratio = GHI / (DNI·cos_Z + DHI)  → 1.0 si perfecto
+    df_out = df_d.copy()
+    df_out["DNI_erbs"]     = df_e["DNI_erbs"]
+    df_out["DHI_erbs"]     = df_e["DHI_erbs"]
+    df_out["flag_erbs"]    = df_e["flag_erbs"]
+    df_out["DNI_reindl2"]  = df_r["DNI_reindl2"]
+    df_out["DHI_reindl2"]  = df_r["DHI_reindl2"]
+    df_out["flag_reindl2"] = df_r["flag_reindl2"]
+
+    p = primary.upper().replace("-", "").replace("_", "").replace("2", "2")
+    if p in ("DIRINT",):
+        df_out["DNI"] = df_out["DNI_dirint"]
+        df_out["DHI"] = df_out["DHI_dirint"]
+        df_out["model_primary"] = df_out["flag_dirint"]
+    elif p in ("ERBS",):
+        df_out["DNI"] = df_out["DNI_erbs"]
+        df_out["DHI"] = df_out["DHI_erbs"]
+        df_out["model_primary"] = df_out["flag_erbs"]
+    else:  # Reindl-2
+        df_out["DNI"] = df_out["DNI_reindl2"]
+        df_out["DHI"] = df_out["DHI_reindl2"]
+        df_out["model_primary"] = df_out["flag_reindl2"]
+
     cos_z_arr = df_out["G0h"].values / np.where(df_out["G0n"].values > 0, df_out["G0n"].values, np.nan)
     recon = df_out["DNI"].values * cos_z_arr + df_out["DHI"].values
     with np.errstate(invalid="ignore", divide="ignore"):

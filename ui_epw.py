@@ -10,7 +10,11 @@ from pathlib import Path
 
 import streamlit as st
 
-from branding import PRODUCT_NAME, epw_attribution_comments
+from branding import (
+    DECOMP_MODELS_BULLETS,
+    PRODUCT_NAME,
+    epw_attribution_comments,
+)
 from epw_io import read_epw, set_location_timezone, stamp_generation_comments
 from epw_merge import build_modified_epw_bytes, merge_into_epw
 from fill_components import fill_missing_solar
@@ -77,6 +81,8 @@ def render_epw_mode() -> None:
                         st.session_state.epw_lon = float(epw_loc["longitude"])
                     if "tz" in epw_loc:
                         st.session_state.epw_tz = float(epw_loc["tz"])
+                    if "elevation_m" in epw_loc:
+                        st.session_state.epw_alt = float(epw_loc["elevation_m"])
                     st.session_state.epw_site_source = epw_file.name
             except Exception:
                 pass
@@ -86,7 +92,7 @@ def render_epw_mode() -> None:
             st.caption(
                 f"Detectado en EPW: {epw_loc.get('city', '?')} | "
                 f"lat={epw_loc.get('latitude', '?')} lon={epw_loc.get('longitude', '?')} "
-                f"tz={epw_loc.get('tz', '?')}"
+                f"tz={epw_loc.get('tz', '?')} elev={epw_loc.get('elevation_m', '?')}"
             )
 
         lat = st.number_input(
@@ -100,6 +106,13 @@ def render_epw_mode() -> None:
             value=float(st.session_state.get("epw_lon", -58.4)),
             min_value=-180.0, max_value=180.0,
             step=0.01, format="%.4f", key="epw_lon",
+        )
+        alt = st.number_input(
+            "Altitud [m s.n.m.]",
+            value=float(st.session_state.get("epw_alt", 0.0)),
+            min_value=0.0, max_value=5000.0,
+            step=10.0, format="%.0f", key="epw_alt",
+            help="Para estimar presión si la plantilla no trae presión medida.",
         )
         tz = st.number_input(
             "Zona horaria mediciones [UTC+]",
@@ -121,12 +134,22 @@ def render_epw_mode() -> None:
             "El −4 de EPW históricos suele ser convención vieja."
         )
 
-        st.subheader("3 · Modelo")
+        st.subheader("3 · Modelos")
+        st.info(
+            "Al rellenar huecos se calculan los **3 modelos en paralelo**. "
+            "El modelo primario define DNI/DHI finales cuando faltan en la plantilla.",
+            icon="ℹ️",
+        )
+        st.markdown(DECOMP_MODELS_BULLETS)
         primary = st.selectbox(
             "Modelo primario (si falta DNI/DHI)",
-            options=["DIRINT", "Erbs"],
+            options=["DIRINT", "Erbs", "Reindl-2"],
             index=0,
             key="epw_primary",
+            help=(
+                "DIRINT = Perez et al. 1992 (pvlib). "
+                "Si DIRINT no tiene vecinos horarios (horas aisladas), se usa Erbs/Reindl-2 como respaldo."
+            ),
         )
 
         st.divider()
@@ -160,7 +183,12 @@ def render_epw_mode() -> None:
                 md = load_measured_table(measured_file, filename=measured_file.name)
             with st.spinner("Rellenando DNI/DHI faltantes…"):
                 fill = fill_missing_solar(
-                    md, lat_deg=lat, lon_deg=lon, tz_hr=tz, primary=primary,
+                    md,
+                    lat_deg=lat,
+                    lon_deg=lon,
+                    tz_hr=tz,
+                    primary=primary,
+                    altitude_m=alt,
                 )
             with st.spinner("Leyendo EPW y mergeando…"):
                 epw = read_epw(BytesIO(epw_file.getvalue()))
