@@ -16,7 +16,15 @@ import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
-from branding import MODE_DECOMP, MODE_EPW, MODE_HOME, PRODUCT_NAME
+from branding import (
+    DECOMP_MODELS_BULLETS,
+    DECOMP_MODELS_INFO,
+    DECOMP_SIDEBAR_CAPTION,
+    MODE_DECOMP,
+    MODE_EPW,
+    MODE_HOME,
+    PRODUCT_NAME,
+)
 from decomposition import run_decomposition
 from io_handler import load_file, summarize_loaded
 from preprocessor import aggregate_to_hourly
@@ -202,11 +210,12 @@ def fig_quality_score(df: pd.DataFrame) -> go.Figure:
 
 with st.sidebar:
     st.markdown(f"**{PRODUCT_NAME}**")
-    st.caption("Descomposición GHI → DNI + DHI")
+    st.caption(DECOMP_SIDEBAR_CAPTION)
     render_back_to_home()
     st.divider()
 
-    st.subheader("0 · Plantilla")
+    st.subheader("0 · Plantilla de datos")
+    st.caption("Descarga el template con el formato requerido e instrucciones.")
     col_tmpl_a, col_tmpl_b = st.columns(2)
     with col_tmpl_a:
         _tmpl_bytes = (
@@ -215,19 +224,24 @@ with st.sidebar:
             else generate_template_excel()
         )
         st.download_button(
-            "Template Excel",
+            label="Template Excel",
             data=_tmpl_bytes,
             file_name="plantilla_datos_v2.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
+            help=(
+                "Planilla con columnas: Date/Time, Global Solar Wh/m2, "
+                "Normal Solar, Diffuse Solar, Temperatura, Presion"
+            ),
         )
     with col_tmpl_b:
         st.download_button(
-            "Template CSV",
+            label="Template CSV",
             data=generate_template_csv(),
             file_name="solar_decomp_template.csv",
             mime="text/csv",
             use_container_width=True,
+            help="CSV con encabezado descriptivo y filas de ejemplo",
         )
     st.divider()
 
@@ -237,8 +251,9 @@ with st.sidebar:
         "CSV, Excel (.xlsx) o EPW",
         type=["csv", "xlsx", "xls", "epw"],
         help=(
-            "CSV/Excel: timestamp + GHI (1/15/60 min). "
-            "EPW: 1 registro/hora; GHI + meteo; DNI/DHI como referencia."
+            "CSV / Excel: columnas mínimas timestamp + GHI; soporta 1-min, 15-min y 60-min. "
+            "EPW: 1 registro por hora; se leen GHI, temperatura, presión (Pa), humedad y punto de rocío, "
+            "y el DNI / DHI del archivo se usan como referencia."
         ),
     )
 
@@ -255,7 +270,7 @@ with st.sidebar:
                 st.error(f"Error al cargar: {e}")
                 st.session_state.loaded = None
 
-    if st.button("Resetear datos", use_container_width=True):
+    if st.button("Resetear todo", use_container_width=True):
         for k in ["loaded", "df_hourly", "df_result", "report", "site_info", "ref_table"]:
             st.session_state[k] = None
         st.rerun()
@@ -264,8 +279,10 @@ with st.sidebar:
     st.subheader("2 · Sitio")
     _ep = st.session_state.loaded.epw_meta if st.session_state.loaded is not None else None
     if _ep:
-        st.caption(
-            f"Sitio del EPW «{_ep['city']}» ({_ep['country']}). Revisá antes de ejecutar."
+        st.info(
+            f"Sitio tomado del encabezado del EPW «{_ep['city']}» ({_ep['country']}). "
+            "Revise los valores antes de ejecutar.",
+            icon="📍",
         )
     lat = st.number_input(
         "Latitud [°N]",
@@ -281,7 +298,7 @@ with st.sidebar:
         "Altitud [m s.n.m.]",
         value=(min(max(_ep["elev"], 0.0), 5000.0) if _ep else 25.0),
         min_value=0.0, max_value=5000.0, step=10.0, format="%.0f",
-        help="Para estimar presión si no hay columna de presión.",
+        help="Usada para estimar presión atmosférica cuando no hay datos medidos.",
     )
     tz = st.number_input(
         "Zona horaria [UTC+]",
@@ -289,28 +306,31 @@ with st.sidebar:
         min_value=-12.0, max_value=14.0, step=0.5, format="%.1f",
     )
 
-    # ── 3. Parámetros del modelo ──────────────────────────────────────────────
-    st.subheader("3 · Modelo")
-    st.caption(
-        "Se calculan DIRINT (Perez 1992), Erbs y Reindl-2. "
-        "Las columnas DNI/DHI finales usan el modelo primario."
-    )
-    primary_model = st.selectbox(
-        "Modelo primario",
-        options=["DIRINT", "Erbs", "Reindl-2"],
-        index=0,
-        help="DIRINT = Perez et al. 1992 vía pvlib (default).",
-    )
+    # ── 3. Modelos ────────────────────────────────────────────────────────────
+    st.subheader("3 · Modelos")
+    st.info(DECOMP_MODELS_INFO, icon="ℹ️")
+    st.markdown(DECOMP_MODELS_BULLETS)
+    primary_model = "DIRINT"  # se calculan los 3; columnas DNI/DHI usan DIRINT por compatibilidad
+
     min_cosz = st.slider(
         "Umbral min cos(Z)",
         min_value=0.01, max_value=0.20, value=0.08, step=0.01,
-        help="Horas con cos(Z) menor se descartan (~0.08 ≈ 85°).",
+        help=(
+            "Horas con cos(Z) menor a este umbral se descartan. "
+            "Valor sugerido: 0.08 (cenit ~85°). "
+            "Reducir si se pierden muchas horas del amanecer/atardecer."
+        ),
     )
     _is_epw = st.session_state.loaded is not None and st.session_state.loaded.is_epw
     preserve_existing = st.checkbox(
         "No recalcular filas con DNI/DHI existentes",
         value=not _is_epw,
-        help="En EPW desactivado por defecto: DNI/DHI del archivo son referencia.",
+        help=(
+            "Si el archivo ya contiene columnas DNI y/o DHI con datos, "
+            "se conservan esos valores y solo se calculan los faltantes. "
+            "En un EPW está desactivado por defecto: su DNI / DHI son la referencia "
+            "con la que se comparan los modelos."
+        ),
     )
     _ld_td = st.session_state.loaded
     _td_possible = _ld_td is not None and bool(
@@ -320,7 +340,13 @@ with st.sidebar:
         "Usar humedad / punto de rocío en el DIRINT",
         value=False,
         disabled=not _td_possible,
-        help="Opcional. Por defecto DIRINT usa el bin de agua precipitable desconocida.",
+        help=(
+            "Opcional. Por defecto el DIRINT usa el bin de «agua precipitable desconocida» "
+            "de Perez et al. (1992). Si el archivo trae humedad relativa (con temperatura) "
+            "o punto de rocío, puede usarse para estimar el agua precipitable. "
+            "En una prueba con 4 estaciones medidas esto no redujo el error de DNI "
+            "(lo aumentó entre 3 y 5 W/m²). Se habilita solo si el archivo trae esos datos."
+        ),
     )
 
     st.divider()
@@ -417,36 +443,41 @@ if run_btn and st.session_state.loaded is not None:
 if st.session_state.loaded is None:
     st.markdown("## Descomposición GHI → DNI + DHI")
     st.info(
-        "Cargá un archivo CSV, Excel o EPW en el panel lateral para comenzar.\n\n"
-        "**Columnas mínimas:** timestamp + GHI [W/m²].\n\n"
-        "**Opcionales:** DNI, DHI (referencia), temperatura [°C], presión [kPa/hPa/Pa], "
-        "humedad relativa [%] o punto de rocío [°C].\n\n"
-        "**Resoluciones:** 1-min · 15-min · 60-min (EPW: horario)."
+        "Carga un archivo CSV, Excel o EPW en el panel lateral para comenzar.\n\n"
+        "**Columnas mínimas requeridas:**\n"
+        "- Timestamp (cualquier nombre reconocible: `timestamp`, `datetime`, `fecha`, etc.)\n"
+        "- GHI en W/m² (nombres reconocidos: `ghi`, `global_horizontal_irradiance`, `swdown`, etc.)\n\n"
+        "**Opcionales:** DNI, DHI (referencia), temperatura [°C], presión [kPa/hPa], "
+        "humedad relativa [%] o punto de rocío [°C]\n\n"
+        "**Resoluciones soportadas:** 1-min · 15-min · 60-min",
+        icon="ℹ️",
     )
 
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("### Modelos")
+        st.markdown("### Modelos implementados")
         st.markdown("""
-**DIRINT** (Perez et al., 1992, vía pvlib)
-- Kt', cenit, ΔKt' y agua precipitable
+**DIRINT** (Perez et al., 1992)
+- Tabla de coeficientes: Kt', ángulo cenital, ΔKt' y agua precipitable
+- Usa variabilidad horaria de Kt'
 - Modelo primario por defecto
 
 **Erbs** (Erbs et al., 1982)
 - Polinomio Kd(Kt) por tramos
-- Sin requerir T/P
+- Sin requerimiento de T/P
+- Fallback / comparación
 
 **Reindl-2** (Reindl et al., 1990)
-- Incorpora elevación solar sin(α)
+- Incorpora la elevación solar sin(α)
         """)
     with col2:
-        st.markdown("### Flujo")
+        st.markdown("### Flujo de procesamiento")
         st.markdown("""
-1. **Carga** — columnas y resolución (CSV/Excel/EPW)
-2. **Preproceso** — agregación + geometría (Spencer/Cooper)
-3. **Descomposición** — DIRINT + Erbs + Reindl-2
-4. **Validación** — quality score
-5. **Exportación** — CSV / Excel / JSON
+1. **Carga** · Detección automática de columnas y resolución
+2. **Preproceso** · Agregación horaria + geometría solar (Spencer / Cooper)
+3. **Descomposición** · DIRINT, Erbs y Reindl-2 en paralelo
+4. **Validación** · Flags físicos + quality score (0–100)
+5. **Exportación** · CSV / Excel + reporte JSON
         """)
 
 elif st.session_state.df_result is None:
@@ -470,9 +501,11 @@ elif st.session_state.df_result is None:
     if summ["has_temp"]:     detected_opt.append("Temperatura")
     if summ["has_pressure"]: detected_opt.append("Presión")
     if summ.get("has_dewpoint"):
-        detected_opt.append("Punto de rocío (opcional en DIRINT)")
+        detected_opt.append("Punto de rocío (uso opcional en el DIRINT)")
     elif summ.get("has_humidity"):
-        detected_opt.append("Humedad relativa (→ punto de rocío; opcional en DIRINT)")
+        detected_opt.append(
+            "Humedad relativa (se convierte a punto de rocío; uso opcional en el DIRINT)"
+        )
     if detected_opt:
         st.success("Columnas opcionales detectadas: " + ", ".join(detected_opt))
 
@@ -480,7 +513,10 @@ elif st.session_state.df_result is None:
         for w in summ["warnings"]:
             st.warning(w)
 
-    st.info("Configurá latitud, longitud y zona horaria en el panel lateral, luego ejecutá la descomposición.")
+    st.info(
+        "Configura latitud, longitud y zona horaria en el panel lateral, "
+        "luego presiona **▶ Ejecutar descomposición**."
+    )
 
 else:
     # ── RESULTADOS ────────────────────────────────────────────────────────────
@@ -509,23 +545,16 @@ else:
     # ── Advertencias de flags ─────────────────────────────────────────────────
     n_unphy = flags.get("flag_kt_unphysical", {}).get("count", 0)
     if n_unphy > 0:
-        st.warning(f"{n_unphy} horas con Kt > 1.05 (probable error de sensor).")
+        st.warning(f"⚠ {n_unphy} horas con Kt > 1.05 (probable error de sensor).")
     if s["quality_score_min"] < 50:
-        st.warning("Algunas horas tienen quality score < 50. Revisar reporte de flags.")
-
-    ref_table = st.session_state.get("ref_table")
-    if ref_table is not None and not getattr(ref_table, "empty", True):
-        st.subheader("Consistencia con DNI/DHI del archivo")
-        st.caption(
-            "Comparación modelo vs columnas DNI/DHI del archivo (no es exactitud "
-            "salvo que esas columnas sean mediciones)."
-        )
-        st.dataframe(ref_table, use_container_width=True, hide_index=True)
+        st.warning("⚠ Algunas horas tienen quality score < 50. Revisar reporte de flags.")
 
     st.divider()
 
     # ── Gráficos ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs(["Serie temporal", "Energía mensual", "Comparación modelos", "Calidad"])
+    tab1, tab2, tab3, tab4 = st.tabs(
+        ["Serie temporal", "Energía mensual", "Comparación DIRINT vs Erbs", "Calidad"]
+    )
 
     with tab1:
         st.plotly_chart(fig_irradiance_timeseries(df), use_container_width=True)
@@ -552,7 +581,7 @@ else:
 
     with tab3:
         mc = rep.get("model_comparison", {})
-        if mc:
+        if mc and "DNI" in mc and "DHI" in mc:
             col_d, col_e = st.columns(2)
             col_d.markdown("**DNI**")
             col_d.metric("DIRINT medio [W/m²]",  f"{mc['DNI']['DIRINT_mean']:.1f}")
@@ -569,10 +598,11 @@ else:
         st.plotly_chart(fig_model_comparison(df), use_container_width=True)
 
         st.markdown(
-            "**Modelos**\n\n"
-            "- **DIRINT** (Perez 1992): Kt', cenit, ΔKt' y agua precipitable.\n"
-            "- **Erbs**: polinomio Kd(Kt); no requiere T/P ni humedad.\n"
-            "- **Reindl-2**: incorpora sin(α). Los tres se exportan en el CSV/Excel."
+            "**Qué usa cada modelo:**\n\n"
+            "- **DIRINT**: tabla de coeficientes (Perez et al., 1992) con Kt', ángulo cenital, "
+            "variabilidad horaria ΔKt' y agua precipitable.\n"
+            "- **Erbs**: fórmula que depende solo de Kt. No requiere agua precipitable.\n"
+            "- **Reindl-2**: incorpora la elevación solar sin(α) además de Kt."
         )
 
     with tab4:
@@ -599,14 +629,48 @@ else:
 
     st.divider()
 
+    # ── Consistencia con la referencia del archivo ───────────────────────────
+    _rt = st.session_state.ref_table
+    if _rt is not None and not _rt.empty:
+        st.subheader("Consistencia con el DNI / DHI del archivo")
+        st.caption(
+            "Cada modelo frente a las columnas DNI y DHI del archivo (media horaria), "
+            "en las horas con GHI ≥ 10 W/m² y cos θz ≥ 0.20. "
+            "Mide la consistencia con esa referencia, no la exactitud: en un archivo IWEC2 "
+            "el DNI es una partición de la GHI del propio archivo y el DHI resulta por cierre, "
+            "es decir, no son mediciones. MBE = modelo − referencia. Sin intervalos de confianza."
+        )
+        st.dataframe(
+            _rt.style.format(
+                {"RMSE": "{:.1f}", "MBE": "{:+.1f}", "nRMSE_pct": "{:.1f}", "R2": "{:.3f}"},
+                na_rep="—",
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.download_button(
+            "⬇ Consistencia con la referencia (CSV)",
+            data=_rt.to_csv(index=False).encode("utf-8"),
+            file_name="solar_decomp_consistencia_referencia.csv",
+            mime="text/csv",
+        )
+        st.divider()
+
     # ── Exportar ──────────────────────────────────────────────────────────────
     st.subheader("Exportar resultados")
+    with st.expander("Leyenda de columnas y flags de calidad"):
+        from reporter import _LEGEND_ROWS
+        st.dataframe(
+            pd.DataFrame(_LEGEND_ROWS, columns=["Columna", "Unidad", "Descripción"]),
+            use_container_width=True,
+            hide_index=True,
+        )
     col_exp1, col_exp2, col_exp3 = st.columns(3)
 
     with col_exp1:
         csv_bytes = export_csv(df, minimal=False)
         st.download_button(
-            "CSV completo",
+            "⬇ CSV completo",
             data=csv_bytes,
             file_name="solar_decomp_resultados.csv",
             mime="text/csv",
@@ -616,7 +680,7 @@ else:
     with col_exp2:
         xlsx_bytes = export_excel(df, rep, minimal=False)
         st.download_button(
-            "Excel (datos + reporte)",
+            "⬇ Excel (datos + reporte)",
             data=xlsx_bytes,
             file_name="solar_decomp_resultados.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -626,7 +690,7 @@ else:
     with col_exp3:
         json_str = report_to_json_str(rep)
         st.download_button(
-            "Reporte JSON",
+            "⬇ Reporte JSON",
             data=json_str,
             file_name="solar_decomp_reporte.json",
             mime="application/json",
@@ -648,3 +712,29 @@ else:
             ),
             use_container_width=True,
         )
+
+# Pie fijo del modo Descomposición (textos alineados a Solar Decomp v1.1.0)
+st.divider()
+with st.expander("Sobre los datos de referencia y la versión 1.1.0"):
+    st.markdown(
+        """
+### Sobre los datos de referencia y esta versión
+
+**Qué mide una comparación con un archivo de referencia.** Si el archivo de referencia es un TMY
+(por ejemplo, un archivo IWEC2), su DNI y su DHI no son mediciones: se generan a partir de la GHI
+del propio archivo. Comparar los modelos contra ese tipo de referencia mide **consistencia con la
+referencia**, no exactitud. Para evaluar la exactitud hacen falta mediciones independientes de DNI y DHI.
+
+**Versión 1.1.0.** El modelo DIRINT es ahora el de Perez et al. (1992), a través de `pvlib`.
+La versión 1.0.0 usaba una tabla propia que no coincidía con la de Perez et al. (1992).
+
+### Referencias
+
+- Perez, R., Ineichen, P., Maxwell, E., Seals, R., & Zelenka, A. (1992). Dynamic global-to-direct irradiance conversion models. *ASHRAE Transactions*, 98(1), 354–369.
+- Erbs, D.G., Klein, S.A., & Duffie, J.A. (1982). Estimation of the diffuse radiation fraction for hourly, daily and monthly-average global radiation. *Solar Energy*, 28(4), 293–302.
+- Reindl, D.T., Beckman, W.A., & Duffie, J.A. (1990). Diffuse fraction correlations. *Solar Energy*, 45(1), 1–7.
+- Spencer, J.W. (1971). Fourier series representation of the position of the sun. *Search*, 2(5), 172.
+- Cooper, P.I. (1969). The absorption of radiation in solar stills. *Solar Energy*, 12(3), 333–346.
+- Kasten, F., & Young, A.T. (1989). Revised optical air mass tables and approximation formula. *Applied Optics*, 28(22), 4735–4738.
+        """
+    )

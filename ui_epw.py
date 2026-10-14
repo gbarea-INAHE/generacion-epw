@@ -10,7 +10,11 @@ from pathlib import Path
 
 import streamlit as st
 
-from branding import PRODUCT_NAME, epw_attribution_comments
+from branding import (
+    DECOMP_MODELS_BULLETS,
+    PRODUCT_NAME,
+    epw_attribution_comments,
+)
 from epw_io import read_epw, set_location_timezone, stamp_generation_comments
 from epw_merge import build_modified_epw_bytes, merge_into_epw
 from fill_components import fill_missing_solar
@@ -130,7 +134,13 @@ def render_epw_mode() -> None:
             "El −4 de EPW históricos suele ser convención vieja."
         )
 
-        st.subheader("3 · Modelo")
+        st.subheader("3 · Modelos")
+        st.info(
+            "Al rellenar huecos se calculan los **3 modelos en paralelo**. "
+            "El modelo primario define DNI/DHI finales cuando faltan en la plantilla.",
+            icon="ℹ️",
+        )
+        st.markdown(DECOMP_MODELS_BULLETS)
         primary = st.selectbox(
             "Modelo primario (si falta DNI/DHI)",
             options=["DIRINT", "Erbs", "Reindl-2"],
@@ -138,7 +148,7 @@ def render_epw_mode() -> None:
             key="epw_primary",
             help=(
                 "DIRINT = Perez et al. 1992 (pvlib). "
-                "Se calculan los tres; este elige DNI/DHI finales al rellenar huecos."
+                "Si DIRINT no tiene vecinos horarios (horas aisladas), se usa Erbs/Reindl-2 como respaldo."
             ),
         )
 

@@ -57,17 +57,35 @@ MODE_HOME = "home"
 
 CTA_DECOMP_TITLE = "Descomposición GHI → DNI + DHI"
 CTA_DECOMP_DESC = (
-    "Cargá una serie de irradiancia global y obtené componentes directa y difusa "
-    "con DIRINT o Erbs, control de calidad y exportación."
+    "Cargá CSV, Excel o EPW y obtené DNI/DHI con DIRINT (Perez 1992), Erbs y "
+    "Reindl-2 en paralelo, control de calidad y exportación."
 )
 CTA_DECOMP_BUTTON = "Abrir descomposición"
 
 CTA_EPW_TITLE = "Generación de EPW"
 CTA_EPW_DESC = (
     "Subí una plantilla de datos medidos y un EPW base: completamos DNI/DHI "
-    "faltantes e incorporamos tus medidas en un EPW listo para simulación."
+    "faltantes con el motor Solar Decomp v1.1.0 e incorporamos tus medidas "
+    "en un EPW listo para simulación."
 )
 CTA_EPW_BUTTON = "Abrir generación de EPW"
+
+# Textos científicos alineados a Solar Decomp v1.1.0
+DECOMP_MODELS_INFO = (
+    "El programa calcula los **3 modelos en paralelo**. "
+    "Los resultados de cada uno se exportan en columnas separadas."
+)
+
+DECOMP_MODELS_BULLETS = (
+    "- **Reindl-2** (Reindl et al., 1990): incorpora la elevación solar sin(α).\n"
+    "- **Erbs** (Erbs et al., 1982): polinomio de la fracción difusa Kd en función de Kt. "
+    "No requiere temperatura ni humedad.\n"
+    "- **DIRINT** (Perez et al., 1992, vía pvlib): tabla de coeficientes con Kt', ángulo cenital, "
+    "ΔKt' y agua precipitable. Por defecto usa la clase de «agua precipitable desconocida»; "
+    "solo usa el punto de rocío si se activa la opción."
+)
+
+DECOMP_SIDEBAR_CAPTION = "GHI → DNI + DHI | DIRINT · Erbs · Reindl-2"
 
 
 def epw_attribution_comments() -> tuple[str, str]:

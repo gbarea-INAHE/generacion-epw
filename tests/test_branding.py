@@ -1,7 +1,17 @@
 """Tests de branding y tema visual."""
 from __future__ import annotations
 
-from branding import AUTHORS, LOGO_PATH, PRODUCT_NAME, TAGLINE, logo_exists
+from branding import (
+    AUTHORS,
+    CTA_DECOMP_DESC,
+    DECOMP_MODELS_BULLETS,
+    DECOMP_MODELS_INFO,
+    DECOMP_SIDEBAR_CAPTION,
+    LOGO_PATH,
+    PRODUCT_NAME,
+    TAGLINE,
+    logo_exists,
+)
 from theme import COLOR_ACCENT, css_block
 
 
@@ -21,6 +31,19 @@ def test_authors_complete():
 def test_product_copy():
     assert PRODUCT_NAME == "Generación de EPW"
     assert "EPW" in TAGLINE or "solar" in TAGLINE.lower()
+
+
+def test_decomp_copy_matches_solar_decomp_v110():
+    """Textos del modo Descomposición alineados a Solar Decomp v1.1.0."""
+    assert "3 modelos en paralelo" in DECOMP_MODELS_INFO
+    assert "columnas separadas" in DECOMP_MODELS_INFO
+    assert "Reindl-2" in DECOMP_MODELS_BULLETS
+    assert "Perez et al., 1992" in DECOMP_MODELS_BULLETS
+    assert "pvlib" in DECOMP_MODELS_BULLETS
+    assert "agua precipitable desconocida" in DECOMP_MODELS_BULLETS
+    assert "DIRINT" in DECOMP_SIDEBAR_CAPTION and "Reindl-2" in DECOMP_SIDEBAR_CAPTION
+    assert "Perez 1992" in CTA_DECOMP_DESC
+    assert "Reindl-2" in CTA_DECOMP_DESC
 
 
 def test_authors_affiliation_short():
