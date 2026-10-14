@@ -79,6 +79,26 @@ def test_fill_both_when_missing():
         assert abs(row["GHI_h"] / recon - 1.0) < 0.15
 
 
+def test_dirint_isolated_hour_falls_back_to_erbs():
+    """Una sola hora: DIRINT Perez puede quedar NaN; el fill debe usar Erbs."""
+    rows = [{
+        COL_DATETIME: "2005-01-15 12:00:00",
+        COL_GHI: 700.0,
+        COL_DNI: np.nan,
+        COL_DHI: np.nan,
+        COL_DRY_BULB: 30.0,
+        COL_PRESSURE: 100.5,
+        COL_RH: 35.0,
+    }]
+    md = _md_hours(rows)
+    result = fill_missing_solar(md, LAT, LON, TZ, primary="DIRINT")
+    row = result.df.iloc[0]
+    assert pd.isna(row["DNI_dirint"])
+    assert row["DNI_erbs"] >= 0
+    assert row["DNI_out"] == pytest.approx(float(row["DNI_erbs"]))
+    assert any("respaldo" in w.lower() or "Erbs" in w for w in result.warnings)
+
+
 def test_no_ghi_does_not_invent_decomposition():
     rows = [{
         COL_DATETIME: "2005-01-15 12:00:00",

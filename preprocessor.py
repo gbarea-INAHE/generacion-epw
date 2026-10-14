@@ -5,7 +5,7 @@ Etapa 0→1 del pipeline:
   · Valida cobertura mínima por hora (COVERAGE_MIN).
   · Agrega GHI a resolución horaria (media aritmética de muestras válidas).
   · Asigna timestamp_center = inicio_hora + 30 min (centro del intervalo).
-  · Propaga columnas opcionales (T, P) por media.
+  · Propaga columnas opcionales (T, P) por media; si hay punto de rocío (o humedad + T) agrega dew_point_C.
   · Llama a solar_geometry.compute_geometry_df para cos_Z, G0n, G0h, AM, zenith.
   · Calcula Kt = GHI_h / G0h (con guard G0h ≤ 0 → NaN).
 
@@ -15,36 +15,48 @@ Salida   : pd.DataFrame horario con columnas estandarizadas.
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional  # noqa: F401  (usado en firma de aggregate_to_hourly)
 
 import numpy as np
 import pandas as pd
 
 from config import COVERAGE_MIN, HOUR_OFFSET_MIN
 from io_handler import LoadedData
-from solar_geometry import compute_geometry_df, lon_to_360W
+from solar_geometry import compute_geometry_df, dew_point_from_rh, lon_to_360W, pressure_from_altitude_kpa
+
+
+def _warn_once(ld: LoadedData, msg: str) -> None:
+    """Agrega el aviso a ld.warnings sin duplicarlo si el preprocesamiento se repite."""
+    if msg not in ld.warnings:
+        ld.warnings.append(msg)
+
+
+def pressure_to_kpa(values: pd.Series) -> tuple[pd.Series, str, float]:
+    """
+    Convierte una columna de presión atmosférica de superficie a kPa, infiriendo la unidad por la MAGNITUD de su mediana:
+      mediana > 2000        → Pa    (rango plausible 30 000–110 000)  → / 1000
+      200 < mediana ≤ 2000  → hPa (= mbar) (300–1100)                 → / 10
+      mediana ≤ 200         → kPa   (30–110)                          → sin cambio
+    Después de convertir, la mediana debe estar entre 30 y 110 kPa; si no, falla con ValueError (no se adivina).
+    Si la columna no tiene ningún valor numérico, se devuelve sin cambios (como antes).
+    Devuelve (serie en kPa, unidad detectada, mediana original).
+    """
+    med = float(values.median())
+    if not np.isfinite(med):
+        return values, "sin datos", med
+    unit, f = ("Pa", 1000.0) if med > 2000 else ("hPa", 10.0) if med > 200 else ("kPa", 1.0)
+    if not 30.0 <= med / f <= 110.0:
+        raise ValueError(
+            f"La columna de presión tiene una mediana de {med:.4g}, que no corresponde a una presión atmosférica de superficie "
+            "en kPa (30–110), hPa (300–1100) ni Pa (30 000–110 000). Revise la columna o sus unidades."
+        )
+    return values / f, unit, med
 
 
 def normalize_pressure_to_kpa(series: pd.Series) -> pd.Series:
-    """
-    Normaliza presión a kPa según la mediana de valores válidos.
-
-    Rangos típicos:
-      · Pa  : ~70 000–110 000  → dividir por 1000
-      · hPa : ~700–1100        → dividir por 10
-      · kPa : ~70–110          → sin cambio
-
-    Nota: umbrales anteriores (>200 → Pa) confundían kPa (~97) con hPa.
-    """
-    s = pd.to_numeric(series, errors="coerce")
-    median_p = s.median()
-    if pd.isna(median_p):
-        return s
-    if median_p > 2000:
-        return s / 1000.0  # Pa → kPa
-    if median_p > 200:
-        return s / 10.0    # hPa → kPa
-    return s               # ya en kPa
+    """Compatibilidad con callers locales: envuelve pressure_to_kpa y devuelve solo la serie."""
+    out, _unit, _med = pressure_to_kpa(pd.to_numeric(series, errors="coerce"))
+    return out
 
 
 # ── Columnas de salida garantizadas ──────────────────────────────────────────
@@ -60,7 +72,7 @@ OUTPUT_COLS = [
     "AM",                # masa de aire (Kasten & Young)
     "Kt",                # clearness index = GHI_h / G0h
     # opcionales (presentes si los datos los tienen):
-    # "temp_C", "pressure_kPa"
+    # "temp_C", "pressure_kPa", "dew_point_C"
 ]
 
 
@@ -69,8 +81,9 @@ def aggregate_to_hourly(
     lat_deg: float,
     lon_deg: float,
     tz_hr: float,
+    altitude_m: float = 0.0,
     temp_default_C: float = 20.0,
-    pressure_default_kPa: float = 101.325,
+    pressure_default_kPa: Optional[float] = None,
 ) -> pd.DataFrame:
     """
     Agrega el DataFrame de alta resolución a resolución horaria.
@@ -105,24 +118,18 @@ def aggregate_to_hourly(
     ghi_series = pd.to_numeric(df[ld.ghi_col], errors="coerce")
     df["_ghi"] = ghi_series
 
-    def _agg_hour(grp: pd.DataFrame):
-        n_total   = len(grp)
-        n_valid   = grp["_ghi"].notna().sum()
-        coverage  = n_valid / samples_per_hour  # relativo a esperado, no a presentes
+    # Agregación robusta compatible con todas las versiones de pandas
+    _grp = df.groupby("_hour_key")["_ghi"]
+    _n_valid  = _grp.apply(lambda s: int(s.notna().sum()))
+    _coverage = _n_valid / samples_per_hour
+    _ghi_mean = _grp.mean()
+    _ghi_mean = _ghi_mean.where(_coverage >= COVERAGE_MIN, other=float("nan"))
 
-        ghi_mean  = grp["_ghi"].mean() if n_valid > 0 else float("nan")
-
-        # Marcar hora inválida si cobertura insuficiente
-        if coverage < COVERAGE_MIN:
-            ghi_mean = float("nan")
-
-        return pd.Series({
-            "GHI_h":    ghi_mean,
-            "coverage": coverage,
-        })
-
-    hourly_base = df.groupby("_hour_key").apply(_agg_hour, include_groups=False).reset_index()
-    hourly_base.rename(columns={"_hour_key": "timestamp_start"}, inplace=True)
+    hourly_base = pd.DataFrame({
+        "timestamp_start": _n_valid.index,
+        "GHI_h":           _ghi_mean.values,
+        "coverage":        _coverage.values,
+    }).reset_index(drop=True)
 
     # ── 5. Agregar temperatura y presión (opcionales) ─────────────────────────
     if ld.temp_col:
@@ -133,15 +140,56 @@ def aggregate_to_hourly(
     else:
         hourly_base["temp_C"] = temp_default_C
 
+    # Presión por defecto: desde altitud si no se provee valor explícito
+    p_default = pressure_default_kPa if pressure_default_kPa is not None else pressure_from_altitude_kpa(altitude_m)
+
     if ld.pressure_col:
-        df["_pres"] = normalize_pressure_to_kpa(
-            pd.to_numeric(df[ld.pressure_col], errors="coerce")
-        )
+        df["_pres"] = pd.to_numeric(df[ld.pressure_col], errors="coerce")
+        # Unidad (Pa, hPa o kPa) inferida por la magnitud de la mediana; falla si no es una presión plausible
+        df["_pres"], _p_unit, _p_med = pressure_to_kpa(df["_pres"])
+        _warn_once(ld, f"Presión: la columna '{ld.pressure_col}' se interpretó en {_p_unit} (mediana {_p_med:.4g}) y se usa en kPa.")
         pres_agg = df.groupby("_hour_key")["_pres"].mean().reset_index()
         pres_agg.columns = ["timestamp_start", "pressure_kPa"]
         hourly_base = hourly_base.merge(pres_agg, on="timestamp_start", how="left")
     else:
-        hourly_base["pressure_kPa"] = pressure_default_kPa
+        hourly_base["pressure_kPa"] = p_default
+
+    # ── 5b. Punto de rocío (opcional; lo usa el DIRINT de Perez para el agua precipitable) ──
+    #  Orden: columna de punto de rocío del archivo; si no hay, humedad relativa + temperatura (Magnus).
+    #  Cada muestra inválida queda NaN (no se recorta ni se inventa) y se informa en ld.warnings; una hora sin
+    #  ninguna muestra válida queda NaN y el DIRINT usa para ella el bin de «agua precipitable desconocida».
+    dew_hourly = None
+    if ld.dewpoint_col:
+        td_raw = pd.to_numeric(df[ld.dewpoint_col], errors="coerce")
+        td_ok = td_raw.where((td_raw >= -80.0) & (td_raw <= 40.0))
+        n_bad = int(td_raw.notna().sum() - td_ok.notna().sum())
+        if n_bad:
+            _warn_once(ld, f"Punto de rocío '{ld.dewpoint_col}': {n_bad} valores fuera de −80…40 °C descartados (NaN).")
+        df["_td"] = td_ok
+        dew_hourly = df.groupby("_hour_key")["_td"].mean()
+    elif ld.humidity_col and ld.temp_col:
+        rh_raw = pd.to_numeric(df[ld.humidity_col], errors="coerce")
+        rh_valid = rh_raw[(rh_raw > 0.0) & (rh_raw <= 100.0)]
+        if rh_valid.notna().any() and float(rh_valid.max()) <= 1.0:
+            _warn_once(ld, f"Humedad relativa '{ld.humidity_col}': todos los valores están entre 0 y 1; se esperan porcentajes (0–100). "
+                           f"NO se usó para el punto de rocío (el DIRINT usa el bin de agua precipitable desconocida). Convierta a % y vuelva a cargar.")
+        else:
+            temp_row = pd.to_numeric(df[ld.temp_col], errors="coerce")
+            td_row = dew_point_from_rh(temp_row.to_numpy(float), rh_raw.to_numpy(float))
+            both = temp_row.notna().to_numpy() & rh_raw.notna().to_numpy()
+            n_bad = int(both.sum() - np.isfinite(td_row).sum())
+            if n_bad:
+                _warn_once(ld, f"Humedad relativa '{ld.humidity_col}': {n_bad} muestras con humedad fuera de (0, 100] % o temperatura fuera de "
+                               f"−45…60 °C quedaron sin punto de rocío (NaN).")
+            df["_td"] = td_row
+            dew_hourly = df.groupby("_hour_key")["_td"].mean()
+    elif ld.humidity_col:
+        _warn_once(ld, f"Humedad relativa '{ld.humidity_col}' detectada pero no hay columna de temperatura: no se puede calcular el punto de rocío "
+                       f"(el DIRINT usa el bin de agua precipitable desconocida).")
+    if dew_hourly is not None:
+        dew_agg = dew_hourly.rename("dew_point_C").reset_index()
+        dew_agg.columns = ["timestamp_start", "dew_point_C"]
+        hourly_base = hourly_base.merge(dew_agg, on="timestamp_start", how="left")
 
     # ── 6. timestamp_center = timestamp_start + 30 min ───────────────────────
     hourly_base["timestamp_center"] = (

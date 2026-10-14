@@ -5,8 +5,8 @@ Marcar casillas al completar. No implementar hasta aprobación humana del plan.
 
 ## Estado
 
-- [ ] Plan revisado / aprobado
-- [ ] Decisiones abiertas resueltas (DIRINT default, UI EPW, versionado, plantillas)
+- [x] Plan revisado / aprobado
+- [x] Decisiones: UI igual; ciencia v1.1.0 en ambos modos; cambios visuales mínimos
 
 ## Checkpoint 0 — Baseline
 

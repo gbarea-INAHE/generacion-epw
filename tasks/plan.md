@@ -3,7 +3,14 @@
 **Fecha:** 2026-10-14  
 **Fuente:** [gbarea-INAHE/solar_decomp](https://github.com/gbarea-INAHE/solar_decomp) @ `17ce7aa` (release/v1.1.0, mergeado hoy)  
 **Destino:** este repo `generacion-epw` (superset: descomposición + generación EPW)  
-**Estado:** plan para revisión humana — sin implementación aún
+**Estado:** decisiones aprobadas — en implementación
+
+### Decisiones aprobadas (2026-10-14)
+
+1. **UI / plataforma visual:** se mantiene (Home, branding, theme, layout de Generación EPW).
+2. **Modo Descomposición:** misma cáscara visual; el motor científico = Solar Decomp v1.1.0.
+3. **Modo Generación EPW:** el programa actual (`fill_components` / merge) usa ese mismo motor científico nuevo.
+4. **Cambios visuales:** solo los mínimos necesarios para exponer ciencia nueva (p. ej. EPW como entrada, checkbox dew point, tabla de consistencia, Reindl-2 en resultados).
 
 ---
 
@@ -15,12 +22,12 @@ Solar Decomp publicó **v1.1.0** con cambios científicos y de I/O importantes. 
 
 ### Objetivo
 
-Traer el núcleo de descomposición v1.1.0 **sin romper** el modo Generación de EPW ni los tests actuales de merge/plantilla.
+Traer el núcleo científico v1.1.0 a ambos modos **sin rediseñar** la plataforma visual; solo añadir controles/resultados si la ciencia nueva lo requiere.
 
 ### No-objetivo (fuera de alcance salvo pedirlo)
 
+- Rediseño visual / nueva identidad de marca
 - Publicar paper / assets de validación de 41 ciudades
-- Cambiar identidad de marca / portada institucional
 - Reescribir `epw_io` / `epw_merge` (salvo adaptar llamadas al nuevo pipeline)
 - Deploy a Streamlit Cloud (puede ser follow-up)
 
@@ -276,12 +283,13 @@ T1 → T2 → Checkpoint A
 
 ---
 
-## 6. Decisiones que requieren confirmación humana
+## 6. Decisiones (cerradas)
 
-1. **¿DIRINT Perez como default inmediato?** (recomendado: sí, con `legacy_dirint` oculto o solo vía flag para reproducibilidad).  
-2. **¿Exponer Reindl-2 y dew-point en modo Generación EPW en esta misma release?** (recomendado: decomp sí; generación EPW con defaults seguros y UI mínima).  
-3. **¿Versionar el producto** como `Generación de EPW 1.1.0` alineado a Solar Decomp, o versión propia (p. ej. 0.2.0)?  
-4. **¿Portar plantillas decomp Excel/CSV** además de la plantilla EPW medidos?
+1. **DIRINT Perez** = default. `legacy_dirint` solo interno/tests (no UI).  
+2. **Descomposición:** exponer lo necesario de v1.1 (EPW input, dew-point opcional, consistencia, Reindl-2 en resultados) sin cambiar look & feel.  
+3. **Generación EPW:** ciencia nueva por debajo; UI del modo se mantiene; defaults seguros (`use_dew_point=False`). Controles nuevos solo si aportan.  
+4. **Versionado:** alinear notas a Solar Decomp 1.1.0 en docs; sin renombrar el producto.  
+5. **Plantillas decomp:** portar si upstream las usa en la app; no pisar `templates/plantilla_medidos_epw.xlsx`.
 
 ---
 

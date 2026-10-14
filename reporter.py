@@ -30,6 +30,8 @@ EXPORT_COLS_FULL = [
     "DHI_dirint",
     "DNI_erbs",
     "DHI_erbs",
+    "DNI_reindl2",
+    "DHI_reindl2",
     "DNI",          # modelo primario
     "DHI",          # modelo primario
     "Kt",
@@ -146,50 +148,54 @@ def build_quality_report(
 
 
 def _model_comparison(df_day: pd.DataFrame) -> dict:
-    """Comparativa estadística DIRINT vs Erbs."""
-    if "DNI_dirint" not in df_day.columns or "DNI_erbs" not in df_day.columns:
+    """Comparativa estadística entre los tres modelos (DIRINT, Erbs, Reindl-2)."""
+    required = ["DNI_dirint", "DNI_erbs"]
+    if not all(c in df_day.columns for c in required):
         return {}
-
-    mask = (
-        df_day["DNI_dirint"].notna()
-        & df_day["DNI_erbs"].notna()
-    )
-    if mask.sum() == 0:
-        return {}
-
-    dni_d = df_day.loc[mask, "DNI_dirint"].values
-    dni_e = df_day.loc[mask, "DNI_erbs"].values
-    dhi_d = df_day.loc[mask, "DHI_dirint"].values if "DHI_dirint" in df_day.columns else np.full(len(dni_d), float("nan"))
-    dhi_e = df_day.loc[mask, "DHI_erbs"].values  if "DHI_erbs"  in df_day.columns else np.full(len(dni_e), float("nan"))
 
     def rmse(a, b):
         valid = ~np.isnan(a) & ~np.isnan(b)
-        if valid.sum() == 0:
-            return float("nan")
-        return float(np.sqrt(np.mean((a[valid] - b[valid])**2)))
+        return float(np.sqrt(np.mean((a[valid] - b[valid])**2))) if valid.sum() > 0 else float("nan")
 
     def mbe(a, b):
         valid = ~np.isnan(a) & ~np.isnan(b)
-        if valid.sum() == 0:
-            return float("nan")
-        return float(np.mean(a[valid] - b[valid]))
+        return float(np.mean(a[valid] - b[valid])) if valid.sum() > 0 else float("nan")
 
-    return {
-        "DNI": {
-            "DIRINT_mean": float(np.nanmean(dni_d)),
-            "Erbs_mean":   float(np.nanmean(dni_e)),
-            "RMSE_W_m2":   rmse(dni_d, dni_e),
-            "MBE_W_m2":    mbe(dni_d, dni_e),
-            "diff_pct":    float(100 * (np.nanmean(dni_d) - np.nanmean(dni_e)) / (np.nanmean(dni_e) + 1e-9)),
-        },
-        "DHI": {
-            "DIRINT_mean": float(np.nanmean(dhi_d)),
-            "Erbs_mean":   float(np.nanmean(dhi_e)),
-            "RMSE_W_m2":   rmse(dhi_d, dhi_e),
-            "MBE_W_m2":    mbe(dhi_d, dhi_e),
-            "diff_pct":    float(100 * (np.nanmean(dhi_d) - np.nanmean(dhi_e)) / (np.nanmean(dhi_e) + 1e-9)),
-        },
-    }
+    def stats(col_a, col_b, label_a, label_b):
+        mask = df_day[col_a].notna() & df_day[col_b].notna()
+        if mask.sum() == 0:
+            return {}
+        a = df_day.loc[mask, col_a].values
+        b = df_day.loc[mask, col_b].values
+        return {
+            f"{label_a}_mean": float(np.nanmean(a)),
+            f"{label_b}_mean": float(np.nanmean(b)),
+            "RMSE_W_m2": rmse(a, b),
+            "MBE_W_m2":  mbe(a, b),
+            "diff_pct":  float(100 * (np.nanmean(a) - np.nanmean(b)) / (np.nanmean(b) + 1e-9)),
+        }
+
+    result: dict = {}
+    result["DNI_DIRINT_vs_Erbs"]    = stats("DNI_dirint", "DNI_erbs",    "DIRINT", "Erbs")
+    result["DHI_DIRINT_vs_Erbs"]    = stats("DHI_dirint", "DHI_erbs",    "DIRINT", "Erbs")
+    if "DNI_reindl2" in df_day.columns:
+        result["DNI_DIRINT_vs_Reindl2"] = stats("DNI_dirint", "DNI_reindl2", "DIRINT", "Reindl2")
+        result["DHI_DIRINT_vs_Reindl2"] = stats("DHI_dirint", "DHI_reindl2", "DIRINT", "Reindl2")
+        result["DNI_Erbs_vs_Reindl2"]   = stats("DNI_erbs",   "DNI_reindl2", "Erbs",   "Reindl2")
+        result["DHI_Erbs_vs_Reindl2"]   = stats("DHI_erbs",   "DHI_reindl2", "Erbs",   "Reindl2")
+
+    # Backward-compatible keys for existing UI code
+    if result.get("DNI_DIRINT_vs_Erbs"):
+        s = result["DNI_DIRINT_vs_Erbs"]
+        result["DNI"] = {"DIRINT_mean": s.get("DIRINT_mean"), "Erbs_mean": s.get("Erbs_mean"),
+                         "RMSE_W_m2": s.get("RMSE_W_m2"), "MBE_W_m2": s.get("MBE_W_m2"),
+                         "diff_pct": s.get("diff_pct")}
+    if result.get("DHI_DIRINT_vs_Erbs"):
+        s = result["DHI_DIRINT_vs_Erbs"]
+        result["DHI"] = {"DIRINT_mean": s.get("DIRINT_mean"), "Erbs_mean": s.get("Erbs_mean"),
+                         "RMSE_W_m2": s.get("RMSE_W_m2"), "MBE_W_m2": s.get("MBE_W_m2"),
+                         "diff_pct": s.get("diff_pct")}
+    return result
 
 
 def _monthly_stats(df: pd.DataFrame) -> dict:
@@ -226,15 +232,52 @@ def export_csv(df_validated: pd.DataFrame, minimal: bool = False) -> bytes:
     return buf.getvalue()
 
 
+_LEGEND_ROWS = [
+    ("timestamp_start",      "—",       "Inicio del intervalo horario"),
+    ("timestamp_center",     "—",       "Centro del intervalo horario (usado en cálculos)"),
+    ("GHI_h",                "W/m²",    "Irradiancia global horizontal promediada al intervalo horario"),
+    ("DNI_dirint",           "W/m²",    "DNI calculado con modelo DIRINT (Perez et al., 1992)"),
+    ("DHI_dirint",           "W/m²",    "DHI calculado con modelo DIRINT"),
+    ("DNI_erbs",             "W/m²",    "DNI calculado con modelo Erbs (Erbs et al., 1982)"),
+    ("DHI_erbs",             "W/m²",    "DHI calculado con modelo Erbs"),
+    ("DNI_reindl2",          "W/m²",    "DNI calculado con modelo Reindl-2 (Reindl et al., 1990)"),
+    ("DHI_reindl2",          "W/m²",    "DHI calculado con modelo Reindl-2"),
+    ("DNI",                  "W/m²",    "DNI columna principal (DIRINT por compatibilidad)"),
+    ("DHI",                  "W/m²",    "DHI columna principal (DIRINT por compatibilidad)"),
+    ("Kt",                   "—",       "Índice de claridad: GHI / G0h (0 = nublado, ~1 = cielo despejado)"),
+    ("Ktp",                  "—",       "Índice de claridad modificado Kt' (corregido por masa de aire)"),
+    ("Kn_dirint",            "—",       "Factor de beam normalizado usado internamente por DIRINT"),
+    ("W_cm",                 "cm",      "Agua precipitable estimada (Leckner, 1978). Usada por DIRINT."),
+    ("cos_Z",                "—",       "Coseno del ángulo cenital solar (promedio analítico del intervalo)"),
+    ("zenith_deg",           "°",       "Ángulo cenital solar en el centro del intervalo"),
+    ("AM",                   "—",       "Masa de aire óptica (Kasten & Young, 1989)"),
+    ("G0n",                  "W/m²",    "Irradiancia extraterrestre normal (sin atmósfera)"),
+    ("G0h",                  "W/m²",    "Irradiancia extraterrestre horizontal = G0n × cos(Z)"),
+    ("coverage",             "fracción","Fracción de registros sub-horarios válidos en el intervalo (0–1)"),
+    ("quality_score",        "0–100",   "Puntaje de calidad del dato horario. 100 = sin flags. Penaliza cada flag según su severidad."),
+    ("flag_kt_cloud_enh",    "bool",    "Kt > 0.9: posible cloud enhancement (sobreestimación transitoria por nube brillante)"),
+    ("flag_kt_unphysical",   "bool",    "Kt > 1.05: valor físicamente imposible, probable error de sensor o calibración"),
+    ("flag_dni_high",        "bool",    "DNI > G0n: supera la irradiancia extraterrestre (imposible físicamente)"),
+    ("flag_dni_unphysical",  "bool",    "DNI > 1000 W/m² con ángulo cenital alto: combinación sospechosa"),
+    ("flag_dni_negative",    "bool",    "DNI < 0: valor negativo (error numérico o de sensor)"),
+    ("flag_dhi_exceeds_ghi", "bool",    "DHI > GHI: la difusa no puede superar la global horizontal"),
+    ("flag_dhi_negative",    "bool",    "DHI < 0: valor negativo (error numérico o de sensor)"),
+    ("flag_night_nonzero",   "bool",    "GHI > 0 cuando el sol está bajo el horizonte (cos Z ≤ 0)"),
+    ("flag_low_coverage",    "bool",    "Menos del 75 % de registros sub-horarios disponibles en el intervalo"),
+    ("flag_invalid_hour",    "bool",    "Hora descartada por múltiples flags críticos simultáneos"),
+]
+
+
 def export_excel(
     df_validated: pd.DataFrame,
     report: dict,
     minimal: bool = False,
 ) -> bytes:
     """
-    Retorna archivo Excel (bytes) con dos hojas:
+    Retorna archivo Excel (bytes) con tres hojas:
       - 'Datos': DataFrame de resultados
-      - 'Reporte': resumen de calidad en formato tabla
+      - 'Reporte_Calidad': resumen de calidad en formato tabla
+      - 'Leyenda': descripción de cada columna y flag
     """
     cols = EXPORT_COLS_MINIMAL if minimal else EXPORT_COLS_FULL
     cols_present = [c for c in cols if c in df_validated.columns]
@@ -243,6 +286,10 @@ def export_excel(
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         df_validated[cols_present].to_excel(writer, sheet_name="Datos", index=False)
         _report_to_sheet(report, writer, sheet_name="Reporte_Calidad")
+        pd.DataFrame(
+            [(r[0], r[1], r[2]) for r in _LEGEND_ROWS if r[0] in cols_present or not minimal],
+            columns=["Columna", "Unidad", "Descripción"],
+        ).to_excel(writer, sheet_name="Leyenda", index=False)
     return buf.getvalue()
 
 
@@ -265,3 +312,94 @@ def _report_to_sheet(report: dict, writer, sheet_name: str = "Reporte"):
 def report_to_json_str(report: dict) -> str:
     """Serializa el reporte a JSON string (para descarga)."""
     return json.dumps(report, indent=2, ensure_ascii=False, default=str)
+
+
+# ── Template de datos de entrada ──────────────────────────────────────────────
+
+def generate_template_excel() -> bytes:
+    """
+    Genera un archivo Excel de plantilla para el usuario.
+    Hoja 1: Instrucciones con descripcion de cada columna.
+    Hoja 2: Plantilla con encabezados y filas de ejemplo.
+    """
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # ── Hoja 1: Instrucciones ─────────────────────────────────────────────
+        instructions = pd.DataFrame([
+            ["INSTRUCCIONES — Solar Decomp", ""],
+            ["", ""],
+            ["COLUMNAS REQUERIDAS", ""],
+            ["timestamp", "Fecha y hora. Formatos aceptados: YYYY-MM-DD HH:MM:SS | DD/MM/YYYY HH:MM | ISO 8601"],
+            ["GHI", "Irradiancia global horizontal [W/m2]. Nombres aceptados: ghi, global_horizontal_irradiance, swdown, ssrd"],
+            ["", ""],
+            ["COLUMNAS OPCIONALES", ""],
+            ["temp_C", "Temperatura de bulbo seco [grados C]. Nombres aceptados: temp_C, t2m, temperatura, dry_bulb (un nombre solo «temp» no se reconoce)"],
+            ["pressure", "Presion atmosferica [kPa, hPa o Pa; la unidad se infiere de la magnitud]. Nombres: pressure, press_kPa, p_hPa"],
+            ["RH", "Humedad relativa [%] (0-100, no fraccion). Con temperatura se convierte a punto de rocio (Magnus). El DIRINT solo lo usa si se activa la opcion. Nombres: RH, relative_humidity, humedad"],
+            ["dew_point", "Punto de rocio [grados C]; si esta presente tiene prioridad sobre la humedad. El DIRINT solo lo usa si se activa la opcion. Nombres: dew_point, Tdew, punto_de_rocio"],
+            ["DNI", "Irradiancia directa normal [W/m2] — solo referencia, no se usa en la descomposicion"],
+            ["DHI", "Irradiancia difusa horizontal [W/m2] — solo referencia, no se usa en la descomposicion"],
+            ["", ""],
+            ["RESOLUCIONES TEMPORALES SOPORTADAS", ""],
+            ["1-min", "1 muestra por minuto (60 muestras/hora)"],
+            ["15-min", "1 muestra cada 15 minutos (4 muestras/hora)"],
+            ["60-min", "1 muestra por hora (1 muestra/hora)"],
+            ["", ""],
+            ["NOTAS", ""],
+            ["- El separador de columnas puede ser coma (,) punto y coma (;) tabulacion o barra vertical (|)", ""],
+            ["- Los valores faltantes deben estar vacios o como NaN", ""],
+            ["- GHI debe estar en W/m2 (no en kW/m2 ni en MJ/m2)", ""],
+            ["- La zona horaria se configura en la interfaz de la aplicacion, no en el archivo", ""],
+        ], columns=["Campo / Descripcion", "Detalle"])
+        instructions.to_excel(writer, sheet_name="Instrucciones", index=False)
+
+        # ── Hoja 2: Plantilla ─────────────────────────────────────────────────
+        example_data = pd.DataFrame({
+            "timestamp":   [
+                "2024-01-15 06:00:00", "2024-01-15 06:15:00",
+                "2024-01-15 06:30:00", "2024-01-15 06:45:00",
+                "2024-01-15 07:00:00", "2024-01-15 07:15:00",
+                "2024-01-15 12:00:00", "2024-01-15 12:15:00",
+                "2024-01-15 12:30:00", "2024-01-15 12:45:00",
+            ],
+            "GHI":         [12.5, 38.2, 75.0, 120.3, 185.7, 245.1, 850.4, 870.2, 860.0, 840.5],
+            "temp_C":      [18.2, 18.3, 18.5, 18.8, 19.1, 19.5, 28.3, 28.6, 28.8, 28.7],
+            "pressure":    [101.1, 101.1, 101.1, 101.1, 101.0, 101.0, 100.8, 100.8, 100.8, 100.8],
+        })
+        example_data.to_excel(writer, sheet_name="Plantilla", index=False)
+
+    # Formato de anchos de columna
+    from openpyxl import load_workbook
+    buf.seek(0)
+    wb = load_workbook(buf)
+    ws_instr = wb["Instrucciones"]
+    ws_instr.column_dimensions["A"].width = 65
+    ws_instr.column_dimensions["B"].width = 90
+    ws_templ = wb["Plantilla"]
+    for col in ["A", "B", "C", "D"]:
+        ws_templ.column_dimensions[col].width = 22
+
+    buf2 = io.BytesIO()
+    wb.save(buf2)
+    return buf2.getvalue()
+
+
+def generate_template_csv() -> bytes:
+    """Genera CSV de plantilla con filas de ejemplo y encabezado comentado."""
+    lines = [
+        "# Solar Decomp — Plantilla de datos de entrada",
+        "# Columnas requeridas: timestamp, GHI (W/m2)",
+        "# Columnas opcionales: temp_C (grados C), pressure (kPa), DNI (W/m2), DHI (W/m2)",
+        "# Resoluciones soportadas: 1-min, 15-min, 60-min",
+        "timestamp,GHI,temp_C,pressure",
+        "2024-01-15 06:00:00,12.5,18.2,101.1",
+        "2024-01-15 06:15:00,38.2,18.3,101.1",
+        "2024-01-15 06:30:00,75.0,18.5,101.1",
+        "2024-01-15 06:45:00,120.3,18.8,101.1",
+        "2024-01-15 07:00:00,185.7,19.1,101.0",
+        "2024-01-15 12:00:00,850.4,28.3,100.8",
+        "2024-01-15 12:15:00,870.2,28.6,100.8",
+        "2024-01-15 12:30:00,860.0,28.8,100.8",
+        "2024-01-15 12:45:00,840.5,28.7,100.8",
+    ]
+    return "\n".join(lines).encode("utf-8")

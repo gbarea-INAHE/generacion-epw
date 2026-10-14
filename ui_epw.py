@@ -77,6 +77,8 @@ def render_epw_mode() -> None:
                         st.session_state.epw_lon = float(epw_loc["longitude"])
                     if "tz" in epw_loc:
                         st.session_state.epw_tz = float(epw_loc["tz"])
+                    if "elevation_m" in epw_loc:
+                        st.session_state.epw_alt = float(epw_loc["elevation_m"])
                     st.session_state.epw_site_source = epw_file.name
             except Exception:
                 pass
@@ -86,7 +88,7 @@ def render_epw_mode() -> None:
             st.caption(
                 f"Detectado en EPW: {epw_loc.get('city', '?')} | "
                 f"lat={epw_loc.get('latitude', '?')} lon={epw_loc.get('longitude', '?')} "
-                f"tz={epw_loc.get('tz', '?')}"
+                f"tz={epw_loc.get('tz', '?')} elev={epw_loc.get('elevation_m', '?')}"
             )
 
         lat = st.number_input(
@@ -100,6 +102,13 @@ def render_epw_mode() -> None:
             value=float(st.session_state.get("epw_lon", -58.4)),
             min_value=-180.0, max_value=180.0,
             step=0.01, format="%.4f", key="epw_lon",
+        )
+        alt = st.number_input(
+            "Altitud [m s.n.m.]",
+            value=float(st.session_state.get("epw_alt", 0.0)),
+            min_value=0.0, max_value=5000.0,
+            step=10.0, format="%.0f", key="epw_alt",
+            help="Para estimar presión si la plantilla no trae presión medida.",
         )
         tz = st.number_input(
             "Zona horaria mediciones [UTC+]",
@@ -124,9 +133,13 @@ def render_epw_mode() -> None:
         st.subheader("3 · Modelo")
         primary = st.selectbox(
             "Modelo primario (si falta DNI/DHI)",
-            options=["DIRINT", "Erbs"],
+            options=["DIRINT", "Erbs", "Reindl-2"],
             index=0,
             key="epw_primary",
+            help=(
+                "DIRINT = Perez et al. 1992 (pvlib). "
+                "Se calculan los tres; este elige DNI/DHI finales al rellenar huecos."
+            ),
         )
 
         st.divider()
@@ -160,7 +173,12 @@ def render_epw_mode() -> None:
                 md = load_measured_table(measured_file, filename=measured_file.name)
             with st.spinner("Rellenando DNI/DHI faltantes…"):
                 fill = fill_missing_solar(
-                    md, lat_deg=lat, lon_deg=lon, tz_hr=tz, primary=primary,
+                    md,
+                    lat_deg=lat,
+                    lon_deg=lon,
+                    tz_hr=tz,
+                    primary=primary,
+                    altitude_m=alt,
                 )
             with st.spinner("Leyendo EPW y mergeando…"):
                 epw = read_epw(BytesIO(epw_file.getvalue()))

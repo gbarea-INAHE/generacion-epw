@@ -16,6 +16,7 @@ from decomposition import run_decomposition
 from io_handler import LoadedData, detect_resolution_sec
 from measured_template import (
     COL_DATETIME,
+    COL_DEW,
     COL_DHI,
     COL_DNI,
     COL_DRY_BULB,
@@ -58,6 +59,10 @@ def _measured_to_loaded(md: MeasuredData) -> tuple[LoadedData, pd.DataFrame]:
 
     temp_col = COL_DRY_BULB if df[COL_DRY_BULB].notna().any() else None
     pressure_col = COL_PRESSURE if df[COL_PRESSURE].notna().any() else None
+    humidity_col = COL_RH if COL_RH in df.columns and df[COL_RH].notna().any() else None
+    dewpoint_col = (
+        COL_DEW if COL_DEW in df.columns and df[COL_DEW].notna().any() else None
+    )
 
     # Si no hay ningún GHI válido, igual armamos LoadedData con columna GHI
     # (aggregate marcará horas inválidas).
@@ -70,6 +75,8 @@ def _measured_to_loaded(md: MeasuredData) -> tuple[LoadedData, pd.DataFrame]:
         dhi_col=COL_DHI,
         temp_col=temp_col,
         pressure_col=pressure_col,
+        humidity_col=humidity_col,
+        dewpoint_col=dewpoint_col,
         warnings=list(md.warnings),
     )
 
@@ -94,19 +101,31 @@ def fill_missing_solar(
     tz_hr: float,
     primary: str = "DIRINT",
     preserve_existing: bool = True,
+    altitude_m: float = 0.0,
+    min_cosz: float | None = None,
+    use_dew_point: bool = False,
 ) -> FillResult:
     """
     Agrega a horario, descompone GHI→DNI+DHI y rellena solo huecos.
+
+    Usa el motor científico Solar Decomp v1.1.0 (DIRINT Perez 1992 / Erbs / Reindl-2).
 
     Reglas:
       - Si hay GHI y falta DNI y/o DHI → calcular y completar.
       - Si DNI/DHI ya medidos y preserve_existing → se conservan.
       - Si no hay GHI → no se inventa; DNI/DHI medidos se propagan igual.
+      - use_dew_point=False por defecto (alineado a Solar Decomp).
     """
     warnings: list[str] = list(md.warnings)
     ld, measured_hourly = _measured_to_loaded(md)
 
-    df_hourly = aggregate_to_hourly(ld, lat_deg=lat_deg, lon_deg=lon_deg, tz_hr=tz_hr)
+    df_hourly = aggregate_to_hourly(
+        ld,
+        lat_deg=lat_deg,
+        lon_deg=lon_deg,
+        tz_hr=tz_hr,
+        altitude_m=altitude_m,
+    )
 
     # Unir medidos DNI/DHI/RH
     df_hourly = df_hourly.merge(
@@ -133,7 +152,39 @@ def fill_missing_solar(
         )
 
     # Descomponer solo tiene sentido con GHI; run_decomposition maneja NaN
-    df_decomp = run_decomposition(df_hourly, primary=primary)
+    decomp_kwargs: dict = {"primary": primary, "use_dew_point": use_dew_point}
+    if min_cosz is not None:
+        decomp_kwargs["min_cosz"] = min_cosz
+    df_decomp = run_decomposition(df_hourly, **decomp_kwargs)
+
+    # DIRINT Perez usa ΔKt' temporal: en horas aisladas (plantilla parcial) puede
+    # quedar NaN. Para rellenar huecos, caer a Erbs y luego Reindl-2 si hace falta.
+    dni_model = df_decomp["DNI"].copy()
+    dhi_model = df_decomp["DHI"].copy()
+    fallback_cols = [
+        ("DNI_erbs", "DHI_erbs"),
+        ("DNI_reindl2", "DHI_reindl2"),
+        ("DNI_dirint", "DHI_dirint"),
+    ]
+    miss = dni_model.isna() | dhi_model.isna()
+    n_fallback = 0
+    if miss.any():
+        for dni_c, dhi_c in fallback_cols:
+            if dni_c not in df_decomp.columns or dhi_c not in df_decomp.columns:
+                continue
+            still = dni_model.isna() | dhi_model.isna()
+            if not still.any():
+                break
+            alt_ok = still & df_decomp[dni_c].notna() & df_decomp[dhi_c].notna()
+            if alt_ok.any():
+                dni_model = dni_model.where(~alt_ok, df_decomp[dni_c])
+                dhi_model = dhi_model.where(~alt_ok, df_decomp[dhi_c])
+                n_fallback += int(alt_ok.sum())
+    if n_fallback:
+        warnings.append(
+            f"{n_fallback} horas: el modelo primario ({primary}) no produjo DNI/DHI "
+            "(p. ej. DIRINT sin vecinos horarios); se usó Erbs/Reindl-2 como respaldo."
+        )
 
     dni_meas = df_decomp["DNI_measured"]
     dhi_meas = df_decomp["DHI_measured"]
@@ -147,8 +198,8 @@ def fill_missing_solar(
 
     dni_final = dni_meas.copy()
     dhi_final = dhi_meas.copy()
-    dni_final = dni_final.where(~need_dni, df_decomp["DNI"])
-    dhi_final = dhi_final.where(~need_dhi, df_decomp["DHI"])
+    dni_final = dni_final.where(~need_dni, dni_model)
+    dhi_final = dhi_final.where(~need_dhi, dhi_model)
 
     df_decomp["DNI_final"] = dni_final
     df_decomp["DHI_final"] = dhi_final

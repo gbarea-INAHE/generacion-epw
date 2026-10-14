@@ -23,7 +23,7 @@ def test_io():
     assert ld.temp_col is not None, "Columna temp no detectada"
     s = summarize_loaded(ld)
     assert s["n_rows"] == 35040
-    print(f"✓ io_handler — {s['n_rows']:,} filas, res={s['resolution']}, ghi_col='{s['ghi_col']}'")
+    print(f"[OK] io_handler -- {s['n_rows']:,} filas, res={s['resolution']}, ghi_col='{s['ghi_col']}'")
     return ld
 
 def test_preprocessor(ld):
@@ -45,7 +45,7 @@ def test_preprocessor(ld):
     assert (midday["G0h"] > 0).all(), "G0h debería ser >0 en enero mediodía (BS.AS.)"
 
     ps = preprocessing_summary(df_h)
-    print(f"✓ preprocessor — {ps['n_daytime_hours']} h diurnas, Kt_mean={ps['kt_mean']:.3f}, "
+    print(f"[OK] preprocessor -- {ps['n_daytime_hours']} h diurnas, Kt_mean={ps['kt_mean']:.3f}, "
           f"cloud_enh={ps['n_kt_cloud_enh']}")
     return df_h
 
@@ -69,8 +69,8 @@ def test_decomposition(df_h):
     ratio_mean = float(clean["GHI_check_ratio"].mean())
     assert approx(ratio_mean, 1.0, 0.05), f"GHI_check_ratio media={ratio_mean:.4f}, esperado ~1.0"
 
-    print(f"✓ decomposition — DNI max={day['DNI_dirint'].max():.1f} W/m², "
-          f"DHI max={day['DHI_dirint'].max():.1f} W/m², "
+    print(f"[OK] decomposition -- DNI max={day['DNI_dirint'].max():.1f} W/m2, "
+          f"DHI max={day['DHI_dirint'].max():.1f} W/m2, "
           f"GHI_check_ratio={ratio_mean:.4f}")
     return df_d
 
@@ -85,7 +85,7 @@ def test_validator(df_d):
     n_enh   = int(df_v["flag_kt_cloud_enh"].sum())
     n_unphy = int(df_v["flag_kt_unphysical"].sum())
     q_mean  = float(scores.mean())
-    print(f"✓ validator — quality_mean={q_mean:.1f}, cloud_enh={n_enh}, unphysical={n_unphy}")
+    print(f"[OK] validator -- quality_mean={q_mean:.1f}, cloud_enh={n_enh}, unphysical={n_unphy}")
     return df_v
 
 def test_reporter(df_v):
@@ -101,8 +101,8 @@ def test_reporter(df_v):
     csv_bytes = export_csv(df_v)
     assert len(csv_bytes) > 1000, "CSV vacío"
 
-    print(f"✓ reporter — GHI_total={rep['summary']['ghi_total_Wh_m2']/1000:.0f} kWh/m², "
-          f"DNI_total={rep['summary']['dni_total_Wh_m2']/1000:.0f} kWh/m², "
+    print(f"[OK] reporter -- GHI_total={rep['summary']['ghi_total_Wh_m2']/1000:.0f} kWh/m2, "
+          f"DNI_total={rep['summary']['dni_total_Wh_m2']/1000:.0f} kWh/m2, "
           f"q_mean={rep['summary']['quality_score_mean']:.1f}")
 
 def main():
@@ -115,7 +115,7 @@ def main():
     df_v = test_validator(df_d)
     test_reporter(df_v)
     print("=" * 60)
-    print("✓ Todos los tests pasaron.")
+    print("[OK] Todos los tests pasaron.")
 
 if __name__ == "__main__":
     main()
