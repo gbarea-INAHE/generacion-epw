@@ -5,5 +5,6 @@ plotly>=5.18.0
 openpyxl>=3.1.0
 xlrd>=2.0.1
 pvlib>=0.10          # DIRINT de Perez (1992); verificado con 0.16.1
+Jinja2>=3.1          # pandas Styler en tablas de resultados
 
 pytest>=7.4

@@ -81,6 +81,7 @@ def render_home() -> None:
             key="cta_decomp",
         ):
             st.session_state.app_page = MODE_DECOMP
+            st.query_params["page"] = MODE_DECOMP
             st.rerun()
 
     with col2:
@@ -96,6 +97,7 @@ def render_home() -> None:
             key="cta_epw",
         ):
             st.session_state.app_page = MODE_EPW
+            st.query_params["page"] = MODE_EPW
             st.rerun()
 
     st.markdown("### Autores")
@@ -113,4 +115,5 @@ def render_back_to_home() -> None:
     """Botón compacto para volver a la portada (sidebar o panel)."""
     if st.button("← Volver a portada", use_container_width=True, key="nav_home"):
         st.session_state.app_page = MODE_HOME
+        st.query_params["page"] = MODE_HOME
         st.rerun()

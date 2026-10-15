@@ -44,6 +44,15 @@ from validator import validate
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "assets" / "plantilla_datos_v2.xlsx"
 
+
+def _styled_or_plain(df: pd.DataFrame, format_map: dict, na_rep: str = "—"):
+    """Usa Styler si hay jinja2; si no, DataFrame plano (evita crash en resultados)."""
+    try:
+        return df.style.format(format_map, na_rep=na_rep)
+    except (AttributeError, ImportError):
+        return df
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuración de página
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,13 +64,18 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Estado de sesión
+# Estado de sesión + router (session_state y ?page=)
 # ─────────────────────────────────────────────────────────────────────────────
 for key in ["loaded", "df_hourly", "df_result", "report", "site_info", "ref_table"]:
     if key not in st.session_state:
         st.session_state[key] = None
 
-if "app_page" not in st.session_state:
+_VALID_PAGES = {MODE_HOME, MODE_DECOMP, MODE_EPW}
+# Deep link: ?page=decomp | epw | home
+_qp_raw = st.query_params.get("page")
+if _qp_raw in _VALID_PAGES:
+    st.session_state.app_page = _qp_raw
+elif "app_page" not in st.session_state:
     st.session_state.app_page = MODE_HOME
 
 # Router
@@ -641,9 +655,9 @@ else:
             "es decir, no son mediciones. MBE = modelo − referencia. Sin intervalos de confianza."
         )
         st.dataframe(
-            _rt.style.format(
+            _styled_or_plain(
+                _rt,
                 {"RMSE": "{:.1f}", "MBE": "{:+.1f}", "nRMSE_pct": "{:.1f}", "R2": "{:.3f}"},
-                na_rep="—",
             ),
             use_container_width=True,
             hide_index=True,
@@ -706,9 +720,9 @@ else:
         ]
         show_cols = [c for c in preview_cols if c in df.columns]
         st.dataframe(
-            df[show_cols].head(96).style.format(
+            _styled_or_plain(
+                df[show_cols].head(96),
                 {c: "{:.2f}" for c in show_cols if c != "timestamp_start"},
-                na_rep="—",
             ),
             use_container_width=True,
         )
