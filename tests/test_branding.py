@@ -33,6 +33,13 @@ def test_product_copy():
     assert "EPW" in TAGLINE or "solar" in TAGLINE.lower()
 
 
+def test_mode_route_constants():
+    from branding import MODE_DECOMP, MODE_EPW, MODE_HOME
+    assert MODE_HOME == "home"
+    assert MODE_DECOMP == "decomp"
+    assert MODE_EPW == "epw"
+
+
 def test_decomp_copy_matches_solar_decomp_v110():
     """Textos del modo Descomposición alineados a Solar Decomp v1.1.0."""
     assert "3 modelos en paralelo" in DECOMP_MODELS_INFO
